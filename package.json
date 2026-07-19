@@ -1,0 +1,16 @@
+{
+  "name": "ync-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Youth Network Community - A premium youth community management platform",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && node index.js",
+    "dev:client": "cd client && npm run dev",
+    "install:all": "npm install && cd server && npm install && cd ../client && npm install",
+    "start": "npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
