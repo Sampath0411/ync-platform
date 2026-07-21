@@ -8,7 +8,8 @@ export function getSocket() {
   const token = localStorage.getItem('ync_token');
   if (!token) return null;
 
-  const serverUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  // Use explicit API URL if set, otherwise derive from current origin (works when Express serves both)
+  const serverUrl = import.meta.env.VITE_API_URL || window.location.origin;
 
   socket = io(serverUrl, {
     auth: { token },

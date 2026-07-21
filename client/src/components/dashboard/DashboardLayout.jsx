@@ -47,7 +47,26 @@ export default function DashboardLayout({ children }) {
   const { user, logout } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const location = useLocation();
-  const notificationCount = 3;
+  const [notificationCount, setNotificationCount] = useState(0);
+
+  useEffect(() => {
+    const fetchCount = async () => {
+      try {
+        const token = localStorage.getItem('ync_token');
+        if (!token) return;
+        const res = await fetch('/api/notifications/unread-count', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (data.count !== undefined) setNotificationCount(data.count);
+      } catch {
+        // silently ignore
+      }
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(e) {

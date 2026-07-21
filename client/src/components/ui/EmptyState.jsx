@@ -1,15 +1,18 @@
+import { isValidElement } from 'react';
 import { HiOutlineInbox } from 'react-icons/hi';
 import Button from './Button';
 
 export default function EmptyState({
-  icon: Icon,
+  icon,
   title = 'Nothing here yet',
   description,
   actionLabel,
   onAction,
   className = '',
 }) {
-  const IconComponent = Icon || HiOutlineInbox;
+  // icon can be either a component reference (FiBell) or a JSX element (<FiBell className="..." />)
+  const iconIsElement = isValidElement(icon);
+  const IconComponent = !iconIsElement && (icon || HiOutlineInbox);
 
   return (
     <div
@@ -19,7 +22,11 @@ export default function EmptyState({
       `}
     >
       <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
-        <IconComponent className="w-8 h-8 text-gray-400 dark:text-gray-500" />
+        {iconIsElement ? (
+          icon
+        ) : (
+          <IconComponent className="w-8 h-8 text-gray-400 dark:text-gray-500" />
+        )}
       </div>
       <h3 className="text-lg font-display font-semibold text-gray-900 dark:text-white mb-1">
         {title}
