@@ -1,0 +1,30 @@
+# YNC Platform — Render Blueprint
+# Connect your GitHub repo to Render and it auto-configures from this file.
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: ync-platform
+    env: node
+    region: singapore  # closest to India for low latency
+    plan: free
+    buildCommand: |
+      cd server && npm install
+      cd ../client && npm install && npm run build
+    startCommand: cd server && NODE_ENV=production node index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "5000"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_JWT_SECRET
+        generateValue: true
+      - key: VAPID_PUBLIC_KEY
+        sync: false  # you'll manually set this
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        value: auto  # Render auto-sets this to your .onrender.com URL
