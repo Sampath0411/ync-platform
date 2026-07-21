@@ -1,0 +1,16 @@
+{
+  "name": "YNC - Youth Network Community",
+  "short_name": "YNC",
+  "description": "Youth Network Community — events, memberships, and community engagement",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#f97316",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ]
+}

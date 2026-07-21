@@ -1,0 +1,247 @@
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const fs = require('fs');
+const { Server } = require('socket.io');
+const { getDb } = require('./db/init');
+const config = require('./config/default');
+const errorHandler = require('./middleware/errorHandler');
+const { checkExpiredMemberships } = require('./services/membershipExpiry');
+
+// Initialize database
+getDb();
+
+// Check for expired memberships on startup and every hour
+checkExpiredMemberships();
+setInterval(checkExpiredMemberships, 60 * 60 * 1000);
+
+// Validate required environment variables at startup
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'ync_jwt_secret_key_2026') {
+  console.warn('WARNING: Using default JWT_SECRET. Set JWT_SECRET environment variable for production.');
+}
+if (!process.env.ADMIN_JWT_SECRET || process.env.ADMIN_JWT_SECRET === 'ync_admin_jwt_secret_key_2026') {
+  console.warn('WARNING: Using default ADMIN_JWT_SECRET. Set ADMIN_JWT_SECRET environment variable for production.');
+}
+
+// Import routes
+const authRoutes = require('./routes/auth');
+const adminAuthRoutes = require('./routes/adminAuth');
+const eventRoutes = require('./routes/events');
+const bookingRoutes = require('./routes/bookings');
+const ticketRoutes = require('./routes/tickets');
+const membershipRoutes = require('./routes/memberships');
+const notificationRoutes = require('./routes/notifications');
+const announcementRoutes = require('./routes/announcements');
+const galleryRoutes = require('./routes/gallery');
+const contactRoutes = require('./routes/contact');
+const adminRoutes = require('./routes/admin');
+const usersRoutes = require('./routes/users');
+const faqRoutes = require('./routes/faqs');
+const sponsorRoutes = require('./routes/sponsors');
+const testimonialRoutes = require('./routes/testimonials');
+const settingsRoutes = require('./routes/settings');
+const favoriteRoutes = require('./routes/favorites');
+const waitlistRoutes = require('./routes/waitlist');
+const reviewRoutes = require('./routes/reviews');
+const feedbackRoutes = require('./routes/feedback');
+const shortUrlRoutes = require('./routes/shortUrls');
+const pushRoutes = require('./routes/push');
+const analyticsRoutes = require('./routes/analytics');
+
+const app = express();
+
+// Security middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow uploads to be served cross-origin
+  contentSecurityPolicy: false, // Disable CSP for API server — handled by frontend if needed
+}));
+
+// CORS — restrict in production
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// General rate limit: 200 requests per minute per IP
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests, please try again later.' },
+});
+app.use('/api', generalLimiter);
+
+// Strict rate limit for auth endpoints (brute force prevention)
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many login attempts. Please try again later.' },
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/admin/auth/login', authLimiter);
+
+// Contact form rate limit (spam prevention)
+const contactLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many messages. Please try again later.' },
+});
+app.use('/api/contact', contactLimiter);
+
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+// Static file serving for uploads
+app.use('/uploads', express.static(config.UPLOAD_DIR));
+
+// API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/admin/auth', adminAuthRoutes);
+app.use('/api/events', eventRoutes);
+app.use('/api/bookings', bookingRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/memberships', membershipRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/announcements', announcementRoutes);
+app.use('/api/gallery', galleryRoutes);
+app.use('/api/contact', contactRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/faqs', faqRoutes);
+app.use('/api/sponsors', sponsorRoutes);
+app.use('/api/testimonials', testimonialRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/favorites', favoriteRoutes);
+app.use('/api/waitlist', waitlistRoutes);
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/feedback', feedbackRoutes);
+app.use('/api/short-urls', shortUrlRoutes);
+app.use('/api/push', pushRoutes);
+app.use('/api/admin/analytics', analyticsRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, message: 'YNC API is running', timestamp: new Date().toISOString() });
+});
+
+// Create HTTP server for Express + Socket.io
+const server = http.createServer(app);
+
+// Socket.io for real-time updates
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: ['GET', 'POST'],
+  },
+});
+
+// Socket.io authentication middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error('Authentication required'));
+  try {
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, config.JWT_SECRET);
+    socket.userId = decoded.id;
+    socket.user = decoded;
+    next();
+  } catch {
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(token, config.ADMIN_JWT_SECRET);
+      socket.userId = decoded.id;
+      socket.user = decoded;
+      socket.isAdmin = true;
+      next();
+    } catch {
+      next(new Error('Invalid token'));
+    }
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log(`Socket connected: ${socket.userId}`);
+
+  // Join personal room for targeted notifications
+  socket.join(`user:${socket.userId}`);
+
+  if (socket.isAdmin) {
+    socket.join('admin');
+  }
+
+  socket.on('disconnect', () => {
+    console.log(`Socket disconnected: ${socket.userId}`);
+  });
+});
+
+// Make io accessible to routes
+app.set('io', io);
+
+// Short URL redirect
+app.get('/s/:code', (req, res) => {
+  try {
+    const db = getDb();
+    const url = db.prepare('SELECT * FROM short_urls WHERE code = ?').get(req.params.code);
+    if (!url) {
+      return res.status(404).send('Link not found');
+    }
+
+    // Check expiry
+    if (url.expires_at && new Date(url.expires_at) < new Date()) {
+      return res.status(410).send('This link has expired');
+    }
+
+    // Increment click count
+    db.prepare('UPDATE short_urls SET click_count = click_count + 1 WHERE code = ?').run(req.params.code);
+
+    res.redirect(301, url.target_url);
+  } catch (err) {
+    console.error('Short URL redirect error:', err);
+    res.status(500).send('Redirect error');
+  }
+});
+
+// --- Production static file serving ---
+if (process.env.NODE_ENV === 'production') {
+  const clientDist = path.resolve(__dirname, '../client/dist');
+  if (fs.existsSync(clientDist)) {
+    console.log(`[production] Serving static files from ${clientDist}`);
+    app.use(express.static(clientDist));
+
+    // SPA fallback — any non-API, non-file request serves index.html
+    app.get(/^(?!\/api\/|\/uploads\/|\/s\/).*/, (req, res) => {
+      res.sendFile(path.join(clientDist, 'index.html'));
+    });
+  } else {
+    console.warn('[production] client/dist not found — run "cd client && npm run build" first');
+  }
+}
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: `Route ${req.method} ${req.url} not found` });
+});
+
+// Error handler
+app.use(errorHandler);
+
+// Start server
+server.listen(config.PORT, () => {
+  console.log(`YNC Server running on port ${config.PORT}`);
+  console.log(`API available at http://localhost:${config.PORT}/api`);
+  console.log(`Uploads directory: ${config.UPLOAD_DIR}`);
+});
+
+module.exports = app;
