@@ -1,1 +1,7 @@
-node_modules/\ndist/\n.env\n*.db\ndata/\nuploads/\n.DS_Store
+node_modules/
+dist/
+.env
+*.db
+data/
+uploads/
+.DS_Store
