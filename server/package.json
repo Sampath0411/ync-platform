@@ -28,6 +28,11 @@
     "jwks-rsa": {
       "jose": "^4.15.9"
     },
-    "jose": "^4.15.9"
+    "jose": "^4.15.9",
+    "htmlparser2": "^8.0.2",
+    "domhandler": "^5.0.3",
+    "dom-serializer": "^2.0.0",
+    "domutils": "^3.1.0",
+    "domelementtype": "^2.3.0"
   }
 }
