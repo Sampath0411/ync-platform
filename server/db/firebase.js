@@ -46,7 +46,12 @@ function initFirebase() {
         storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
       };
     } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      let serviceAccount;
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      } catch (parseErr) {
+        throw new Error(`FIREBASE_SERVICE_ACCOUNT JSON parse failed: ${parseErr.message}`);
+      }
       appConfig = {
         credential: cert(serviceAccount),
         storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${serviceAccount.project_id}.firebasestorage.app`,

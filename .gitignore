@@ -8,3 +8,5 @@ uploads/
 .claude/
 firebase-key.json
 *.service-account.json
+
+.vercel
