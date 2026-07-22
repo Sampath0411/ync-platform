@@ -18,12 +18,18 @@ export function usePushNotifications() {
   const { isAuthenticated } = useAuth();
 
   useEffect(() => {
+    // Don't register SW in dev mode — causes stale SW errors
+    if (import.meta.env.DEV) return;
     if (!isAuthenticated || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
 
     let swRegistration = null;
 
     async function registerSW() {
       try {
+        // Unregister any existing stale service workers first
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map(r => r.unregister()));
+
         swRegistration = await navigator.serviceWorker.register('/sw.js');
         console.log('SW registered');
 

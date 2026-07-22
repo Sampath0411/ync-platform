@@ -4,6 +4,7 @@ let socket = null;
 
 export function getSocket() {
   if (socket) return socket;
+  if (import.meta.env.VITE_ENABLE_SOCKET === 'false') return null;
 
   const token = localStorage.getItem('ync_token');
   if (!token) return null;
@@ -31,7 +32,9 @@ export function getSocket() {
   });
 
   socket.on('connect_error', (err) => {
-    console.error('Socket connection error:', err.message);
+    if (import.meta.env.DEV) {
+      console.warn('Socket connection unavailable:', err.message);
+    }
   });
 
   return socket;

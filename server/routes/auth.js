@@ -16,7 +16,7 @@ const {
   isValidDate,
   isValidLength,
 } = require('../utils/validation');
-const { getFirestore, getDoc, getAuth } = require('../db/firebase');
+const { getFirestore, getDoc, getAuth, uploadFile } = require('../db/firebase');
 
 const router = express.Router();
 
@@ -367,13 +367,20 @@ router.put('/photo', auth, upload.single('photo'), async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const uploaded = await uploadFile(
+      req.file.buffer,
+      req.file.originalname,
+      req.file.mimetype,
+      'profile-photos'
+    );
+
     await userRepo.update(req.user.id, {
-      profile_photo: photoUrl,
+      profile_photo: uploaded.url,
+      profile_photo_path: uploaded.path,
       updated_at: new Date().toISOString(),
     });
 
-    res.json({ success: true, data: { profile_photo: photoUrl }, message: 'Profile photo updated' });
+    res.json({ success: true, data: { profile_photo: uploaded.url }, message: 'Profile photo updated' });
   } catch (err) {
     console.error('Upload photo error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });

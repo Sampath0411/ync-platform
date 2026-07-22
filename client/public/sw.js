@@ -10,7 +10,7 @@ const STATIC_ASSETS = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
+      return cache.addAll(STATIC_ASSETS).catch(() => {});
     })
   );
   self.skipWaiting();
@@ -28,10 +28,12 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch event — network first, fallback to cache
+// Fetch event — network first, fallback to cache, never throw
 self.addEventListener('fetch', (event) => {
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request).catch(() => {
+      return caches.match(event.request).then(cached => cached || new Response('', { status: 503 }));
+    })
   );
 });
 

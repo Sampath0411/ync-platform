@@ -13,22 +13,6 @@ const config = require('./config/default');
 const errorHandler = require('./middleware/errorHandler');
 const { checkExpiredMemberships } = require('./services/membershipExpiry');
 
-// Initialize Firebase
-console.log('Initializing Firebase...');
-const db = getFirestore();
-
-// Check for expired memberships on startup and every hour
-checkExpiredMemberships();
-setInterval(checkExpiredMemberships, 60 * 60 * 1000);
-
-// Validate required environment variables at startup
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'ync_jwt_secret_key_2026') {
-  console.warn('WARNING: Using default JWT_SECRET. Set JWT_SECRET environment variable for production.');
-}
-if (!process.env.ADMIN_JWT_SECRET || process.env.ADMIN_JWT_SECRET === 'ync_admin_jwt_secret_key_2026') {
-  console.warn('WARNING: Using default ADMIN_JWT_SECRET. Set ADMIN_JWT_SECRET environment variable for production.');
-}
-
 // Import routes
 const authRoutes = require('./routes/auth');
 const adminAuthRoutes = require('./routes/adminAuth');
@@ -53,6 +37,20 @@ const feedbackRoutes = require('./routes/feedback');
 const shortUrlRoutes = require('./routes/shortUrls');
 const pushRoutes = require('./routes/push');
 const analyticsRoutes = require('./routes/analytics');
+const cronRoutes = require('./routes/cron');
+
+const isServerless = process.env.VERCEL === '1' || process.env.SERVERLESS === '1';
+
+console.log('Initializing Firebase...');
+getFirestore();
+
+// Validate required environment variables at startup
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'ync_jwt_secret_key_2026') {
+  console.warn('WARNING: Using default JWT_SECRET. Set JWT_SECRET environment variable for production.');
+}
+if (!process.env.ADMIN_JWT_SECRET || process.env.ADMIN_JWT_SECRET === 'ync_admin_jwt_secret_key_2026') {
+  console.warn('WARNING: Using default ADMIN_JWT_SECRET. Set ADMIN_JWT_SECRET environment variable for production.');
+}
 
 const app = express();
 
@@ -69,41 +67,45 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Rate limiting
-const generalLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many requests, please try again later.' },
-});
-app.use('/api', generalLimiter);
+// Rate limiting — skip in serverless to avoid noisy memory-store warnings per function instance
+if (!isServerless) {
+  const generalLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many requests, please try again later.' },
+  });
+  app.use('/api', generalLimiter);
 
-const authLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many login attempts. Please try again later.' },
-});
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
-app.use('/api/admin/auth/login', authLimiter);
+  const authLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many login attempts. Please try again later.' },
+  });
+  app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/register', authLimiter);
+  app.use('/api/admin/auth/login', authLimiter);
 
-const contactLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 3,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many messages. Please try again later.' },
-});
-app.use('/api/contact', contactLimiter);
+  const contactLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many messages. Please try again later.' },
+  });
+  app.use('/api/contact', contactLimiter);
+}
 
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 
-// Static file serving for uploads
-app.use('/uploads', express.static(config.UPLOAD_DIR));
+// Static file serving for legacy local uploads only. New uploads use Firebase Storage.
+if (!isServerless) {
+  app.use('/uploads', express.static(config.UPLOAD_DIR));
+}
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -129,63 +131,12 @@ app.use('/api/feedback', feedbackRoutes);
 app.use('/api/short-urls', shortUrlRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/admin/analytics', analyticsRoutes);
+app.use('/api/cron', cronRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'YNC API is running', timestamp: new Date().toISOString() });
 });
-
-// Create HTTP server for Express + Socket.io
-const server = http.createServer(app);
-
-// Socket.io for real-time updates
-const io = new Server(server, {
-  cors: {
-    origin: process.env.CORS_ORIGIN || '*',
-    methods: ['GET', 'POST'],
-  },
-});
-
-// Socket.io authentication middleware
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error('Authentication required'));
-  try {
-    const jwt = require('jsonwebtoken');
-    const decoded = jwt.verify(token, config.JWT_SECRET);
-    socket.userId = decoded.id;
-    socket.user = decoded;
-    next();
-  } catch {
-    try {
-      const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(token, config.ADMIN_JWT_SECRET);
-      socket.userId = decoded.id;
-      socket.user = decoded;
-      socket.isAdmin = true;
-      next();
-    } catch {
-      next(new Error('Invalid token'));
-    }
-  }
-});
-
-io.on('connection', (socket) => {
-  console.log(`Socket connected: ${socket.userId}`);
-
-  socket.join(`user:${socket.userId}`);
-
-  if (socket.isAdmin) {
-    socket.join('admin');
-  }
-
-  socket.on('disconnect', () => {
-    console.log(`Socket disconnected: ${socket.userId}`);
-  });
-});
-
-// Make io accessible to routes
-app.set('io', io);
 
 // Short URL redirect — using Firestore
 app.get('/s/:code', async (req, res) => {
@@ -212,8 +163,8 @@ app.get('/s/:code', async (req, res) => {
   }
 });
 
-// --- Production static file serving ---
-if (process.env.NODE_ENV === 'production') {
+// --- Production static file serving for traditional Node hosts only ---
+if (process.env.NODE_ENV === 'production' && !isServerless) {
   const clientDist = path.resolve(__dirname, '../client/dist');
   if (fs.existsSync(clientDist)) {
     console.log(`[production] Serving static files from ${clientDist}`);
@@ -235,11 +186,78 @@ app.use((req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Start server
-server.listen(config.PORT, () => {
-  console.log(`YNC Server running on port ${config.PORT}`);
-  console.log(`API available at http://localhost:${config.PORT}/api`);
-  console.log(`Uploads directory: ${config.UPLOAD_DIR}`);
-});
+function startSocketServer(server) {
+  if (process.env.ENABLE_SOCKET === 'false') return null;
+
+  const io = new Server(server, {
+    cors: {
+      origin: process.env.CORS_ORIGIN || '*',
+      methods: ['GET', 'POST'],
+    },
+  });
+
+  // Socket.io authentication middleware
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Authentication required'));
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(token, config.JWT_SECRET);
+      socket.userId = decoded.id;
+      socket.user = decoded;
+      next();
+    } catch {
+      try {
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.verify(token, config.ADMIN_JWT_SECRET);
+        socket.userId = decoded.id;
+        socket.user = decoded;
+        socket.isAdmin = true;
+        next();
+      } catch {
+        next(new Error('Invalid token'));
+      }
+    }
+  });
+
+  io.on('connection', (socket) => {
+    console.log(`Socket connected: ${socket.userId}`);
+
+    socket.join(`user:${socket.userId}`);
+
+    if (socket.isAdmin) {
+      socket.join('admin');
+    }
+
+    socket.on('disconnect', () => {
+      console.log(`Socket disconnected: ${socket.userId}`);
+    });
+  });
+
+  app.set('io', io);
+  return io;
+}
+
+function startServer() {
+  // Check for expired memberships on startup and every hour for long-running Node hosts only.
+  checkExpiredMemberships();
+  setInterval(checkExpiredMemberships, 60 * 60 * 1000);
+
+  const server = http.createServer(app);
+  startSocketServer(server);
+
+  server.listen(config.PORT, () => {
+    console.log(`YNC Server running on port ${config.PORT}`);
+    console.log(`API available at http://localhost:${config.PORT}/api`);
+    console.log(`Uploads directory: ${config.UPLOAD_DIR}`);
+  });
+
+  return server;
+}
+
+if (require.main === module) {
+  startServer();
+}
 
 module.exports = app;
+module.exports.startServer = startServer;

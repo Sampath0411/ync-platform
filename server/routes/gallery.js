@@ -1,11 +1,9 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
-const path = require('path');
 const galleryRepo = require('../repositories/galleryRepo');
 const adminAuth = require('../middleware/adminAuth');
 const upload = require('../middleware/upload');
-const config = require('../config/default');
+const { uploadFile, deleteFile } = require('../db/firebase');
 
 const router = express.Router();
 
@@ -27,14 +25,19 @@ router.post('/', adminAuth, upload.single('image'), async (req, res) => {
 
     const { title, description } = req.body;
     const id = uuidv4();
-    const url = `/uploads/${req.file.filename}`;
-    const thumbnailUrl = `/uploads/${req.file.filename}`;
+    const uploaded = await uploadFile(
+      req.file.buffer,
+      req.file.originalname,
+      req.file.mimetype,
+      'gallery'
+    );
 
     const galleryData = {
       id,
       type: 'image',
-      url,
-      thumbnail_url: thumbnailUrl,
+      url: uploaded.url,
+      thumbnail_url: uploaded.url,
+      storage_path: uploaded.path,
       title: title || null,
       description: description || null,
       uploaded_by: req.admin.id,
@@ -60,13 +63,7 @@ router.delete('/:id', adminAuth, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Gallery item not found' });
     }
 
-    if (existing.url) {
-      const filename = path.basename(existing.url);
-      const filePath = path.join(config.UPLOAD_DIR, filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
+    await deleteFile(existing.storage_path || existing.url);
 
     await galleryRepo.delete(req.params.id);
     res.json({ success: true, message: 'Gallery item deleted successfully' });
