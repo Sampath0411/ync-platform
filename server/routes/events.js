@@ -5,11 +5,10 @@ const eventRepo = require('../repositories/eventRepo');
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
 const { sanitize, sanitizeMultiline } = require('../utils/validation');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 
 const router = express.Router();
 
-// ---- Validation rules ----
 const eventRules = [
   body('name').trim().isLength({ min: 2, max: 200 }).withMessage('Event name must be 2-200 characters'),
   body('description').optional({ values: 'falsy' }).trim().isLength({ max: 5000 }).withMessage('Description too long (max 5000)'),
@@ -28,15 +27,6 @@ const eventRules = [
   body('rules').optional({ values: 'falsy' }).trim().isLength({ max: 5000 }).withMessage('Rules too long'),
 ];
 
-const eventUpdateRules = eventRules.map(rule => {
-  // Make all fields optional for updates
-  if (rule.builder) {
-    // Keep the same rules but allow optional
-  }
-  return rule;
-});
-
-// ---- Validation result handler ----
 function handleErrors(req, res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -48,9 +38,7 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// ---- Routes ----
-
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const {
       status,
@@ -61,65 +49,76 @@ router.get('/', (req, res) => {
       page = 1,
       limit = 20,
       sort_by = 'event_date',
-      sort_order = 'DESC',
+      sort_order = 'desc',
     } = req.query;
 
-    let conditions = [];
-    let params = [];
+    const db = getFirestore();
+    let query = db.collection('events');
+    const filters = [];
 
     if (status) {
       const statuses = status.split(',');
-      const placeholders = statuses.map(() => '?').join(',');
-      conditions.push(`status IN (${placeholders})`);
-      params.push(...statuses);
+      // Firestore 'in' supports up to 10 values
+      if (statuses.length <= 10) {
+        query = query.where('status', 'in', statuses);
+        filters.push('status');
+      }
     }
 
     if (category) {
-      conditions.push('category = ?');
-      params.push(category);
+      query = query.where('category', '==', category);
+      filters.push('category');
     }
 
+    const allowedSort = ['event_date', 'created_at', 'name', 'price'];
+    const sort = allowedSort.includes(sort_by) ? sort_by : 'event_date';
+    const order = sort_order === 'ASC' || sort_order === 'asc' ? 'asc' : 'desc';
+
+    // Date range filtering — do client-side for flexibility
+    let snapshot = await query.orderBy(sort, order).get();
+    let results = snapshotToArray(snapshot);
+
+    // Apply client-side filters that Firestore can't do natively
     if (search) {
-      conditions.push('(name LIKE ? OR description LIKE ? OR venue LIKE ?)');
-      const s = `%${search}%`;
-      params.push(s, s, s);
+      const q = search.toLowerCase();
+      results = results.filter(e =>
+        (e.name && e.name.toLowerCase().includes(q)) ||
+        (e.description && e.description.toLowerCase().includes(q)) ||
+        (e.venue && e.venue.toLowerCase().includes(q))
+      );
     }
 
     if (date_from) {
-      conditions.push('event_date >= ?');
-      params.push(date_from);
+      results = results.filter(e => e.event_date >= date_from);
     }
 
     if (date_to) {
-      conditions.push('event_date <= ?');
-      params.push(date_to);
+      results = results.filter(e => e.event_date <= date_to);
     }
 
-    const whereClause = conditions.length > 0 ? conditions.join(' AND ') : '';
-    const allowedSort = ['event_date', 'created_at', 'name', 'price'];
-    const sort = allowedSort.includes(sort_by) ? sort_by : 'event_date';
-    const order = sort_order === 'ASC' ? 'ASC' : 'DESC';
+    // Paginate
+    const total = results.length;
+    const p = Math.max(1, parseInt(page, 10));
+    const l = Math.max(1, Math.min(100, parseInt(limit, 10)));
+    const offset = (p - 1) * l;
+    const data = results.slice(offset, offset + l);
 
-    const db = require('../db/init').getDb();
-    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-    const where = whereClause ? `WHERE ${whereClause}` : '';
-
-    const countRow = db
-      .prepare(`SELECT COUNT(*) as total FROM events ${where}`)
-      .get(...params);
-    const total = countRow ? countRow.total : 0;
-    const rows = db
-      .prepare(`SELECT * FROM events ${where} ORDER BY ${sort} ${order} LIMIT ? OFFSET ?`)
-      .all(...params, parseInt(limit, 10), offset);
+    // Parse stored JSON fields for response
+    const parsed = data.map(e => ({
+      ...e,
+      gallery_images: typeof e.gallery_images === 'string' ? JSON.parse(e.gallery_images) : e.gallery_images,
+      highlights: typeof e.highlights === 'string' ? JSON.parse(e.highlights) : e.highlights,
+      contact_info: typeof e.contact_info === 'string' ? JSON.parse(e.contact_info) : e.contact_info,
+    }));
 
     res.json({
       success: true,
-      data: rows,
+      data: parsed,
       pagination: {
-        page: parseInt(page, 10),
-        limit: parseInt(limit, 10),
+        page: p,
+        limit: l,
         total,
-        totalPages: Math.ceil(total / parseInt(limit, 10)),
+        totalPages: Math.ceil(total / l),
       },
     });
   } catch (err) {
@@ -128,78 +127,65 @@ router.get('/', (req, res) => {
   }
 });
 
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
-    const event = eventRepo.findById(req.params.id);
+    const event = await eventRepo.findById(req.params.id);
     if (!event) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
-    res.json({ success: true, data: event });
+    // Parse JSON fields
+    const parsed = {
+      ...event,
+      gallery_images: typeof event.gallery_images === 'string' ? JSON.parse(event.gallery_images) : event.gallery_images,
+      highlights: typeof event.highlights === 'string' ? JSON.parse(event.highlights) : event.highlights,
+      contact_info: typeof event.contact_info === 'string' ? JSON.parse(event.contact_info) : event.contact_info,
+    };
+    res.json({ success: true, data: parsed });
   } catch (err) {
     console.error('Get event error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-router.post('/', adminAuth, eventRules, handleErrors, (req, res) => {
+router.post('/', adminAuth, eventRules, handleErrors, async (req, res) => {
   try {
     const {
-      name,
-      description,
-      cover_image,
-      gallery_images,
-      event_date,
-      start_time,
-      end_time,
-      venue,
-      google_maps_link,
-      organizer_name,
-      category,
-      max_capacity,
-      registration_deadline,
-      rules,
-      highlights,
-      contact_info,
-      price,
-      member_discount,
-      non_member_price,
-      status,
+      name, description, cover_image, gallery_images, event_date,
+      start_time, end_time, venue, google_maps_link, organizer_name,
+      category, max_capacity, registration_deadline, rules, highlights,
+      contact_info, price, member_discount, non_member_price, status,
     } = req.body;
 
     const id = uuidv4();
 
-    // Sanitize text fields
-    const sanitizedDescription = description ? sanitizeMultiline(description) : null;
-    const sanitizedVenue = venue ? sanitize(venue) : null;
-    const sanitizedOrg = organizer_name ? sanitize(organizer_name) : null;
-    const sanitizedRules = rules ? sanitizeMultiline(rules) : null;
-
     const eventData = {
       id,
       name: sanitize(name),
-      description: sanitizedDescription,
+      description: description ? sanitizeMultiline(description) : null,
       cover_image: cover_image || null,
-      gallery_images: gallery_images ? JSON.stringify(gallery_images) : '[]',
+      gallery_images: gallery_images || [],
       event_date,
       start_time: start_time || null,
       end_time: end_time || null,
-      venue: sanitizedVenue,
+      venue: venue ? sanitize(venue) : null,
       google_maps_link: google_maps_link || null,
-      organizer_name: sanitizedOrg,
+      organizer_name: organizer_name ? sanitize(organizer_name) : null,
       category: category || null,
       max_capacity: max_capacity != null ? parseInt(max_capacity, 10) : 0,
       available_seats: max_capacity != null ? parseInt(max_capacity, 10) : 0,
       registration_deadline: registration_deadline || null,
-      rules: sanitizedRules,
-      highlights: highlights ? JSON.stringify(highlights) : '[]',
-      contact_info: contact_info ? JSON.stringify(contact_info) : '{}',
+      rules: rules ? sanitizeMultiline(rules) : null,
+      highlights: highlights || [],
+      contact_info: contact_info || {},
       price: price != null ? parseFloat(price) : 0,
       member_discount: member_discount != null ? parseFloat(member_discount) : 0,
       non_member_price: non_member_price != null ? parseFloat(non_member_price) : 0,
       status: status || 'draft',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    const event = eventRepo.create(eventData);
+    const event = await eventRepo.create(eventData);
     res.status(201).json({ success: true, data: event, message: 'Event created successfully' });
   } catch (err) {
     console.error('Create event error:', err);
@@ -207,9 +193,9 @@ router.post('/', adminAuth, eventRules, handleErrors, (req, res) => {
   }
 });
 
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = eventRepo.findById(req.params.id);
+    const existing = await eventRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
@@ -225,18 +211,20 @@ router.put('/:id', adminAuth, (req, res) => {
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
-        // Sanitize text fields
         if (field === 'name') updates[field] = sanitize(req.body[field]);
         else if (field === 'description' || field === 'rules') updates[field] = sanitizeMultiline(req.body[field]);
         else if (field === 'venue' || field === 'organizer_name') updates[field] = sanitize(req.body[field]);
-        else if (field === 'gallery_images' || field === 'highlights' || field === 'contact_info') {
-          updates[field] = JSON.stringify(req.body[field]);
-        } else if (field === 'max_capacity' && req.body[field] < existing.max_capacity) {
-          // Validate capacity reduction doesn't go below confirmed bookings
-          const db = getDb();
-          const bookedCount = db.prepare(
-            "SELECT COALESCE(SUM(quantity), 0) as total FROM bookings WHERE event_id = ? AND status = 'confirmed'"
-          ).get(req.params.id).total;
+        else if (field === 'gallery_images' || field === 'highlights') updates[field] = req.body[field];
+        else if (field === 'contact_info') updates[field] = req.body[field];
+        else if (field === 'max_capacity' && req.body[field] < existing.max_capacity) {
+          const db = getFirestore();
+          const bookingsSnap = await db.collection('bookings')
+            .where('event_id', '==', req.params.id)
+            .where('status', '==', 'confirmed')
+            .get();
+
+          let bookedCount = 0;
+          bookingsSnap.forEach(doc => { bookedCount += (doc.data().quantity || 0); });
 
           if (req.body.max_capacity < bookedCount) {
             return res.status(400).json({
@@ -256,7 +244,7 @@ router.put('/:id', adminAuth, (req, res) => {
       }
     }
 
-    const event = eventRepo.update(req.params.id, updates);
+    const event = await eventRepo.update(req.params.id, updates);
     res.json({ success: true, data: event, message: 'Event updated successfully' });
   } catch (err) {
     console.error('Update event error:', err);
@@ -264,26 +252,28 @@ router.put('/:id', adminAuth, (req, res) => {
   }
 });
 
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = eventRepo.findById(req.params.id);
+    const existing = await eventRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
 
     // Check no active bookings
-    const db = getDb();
-    const activeBookings = db.prepare(
-      "SELECT COUNT(*) as count FROM bookings WHERE event_id = ? AND status = 'confirmed'"
-    ).get(req.params.id);
-    if (activeBookings.count > 0) {
+    const db = getFirestore();
+    const bookingsSnap = await db.collection('bookings')
+      .where('event_id', '==', req.params.id)
+      .where('status', '==', 'confirmed')
+      .get();
+
+    if (bookingsSnap.size > 0) {
       return res.status(400).json({
         success: false,
-        message: `Cannot delete event with ${activeBookings.count} active booking(s). Cancel bookings first.`,
+        message: `Cannot delete event with ${bookingsSnap.size} active booking(s). Cancel bookings first.`,
       });
     }
 
-    eventRepo.delete(req.params.id);
+    await eventRepo.delete(req.params.id);
     res.json({ success: true, message: 'Event deleted successfully' });
   } catch (err) {
     console.error('Delete event error:', err);

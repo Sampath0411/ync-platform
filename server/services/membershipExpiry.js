@@ -1,49 +1,66 @@
-/**
- * Membership expiry checker.
- * Run on startup and periodically to expire memberships past their expiry date.
- */
-const { getDb } = require('../db/init');
+const { getFirestore } = require('../db/firebase');
 
-/**
- * Check and expire memberships where expiry date has passed.
- * Returns the number of users expired.
- */
-function checkExpiredMemberships() {
+async function checkExpiredMemberships() {
   try {
-    const db = getDb();
+    const db = getFirestore();
+    const now = new Date().toISOString();
+    let totalExpired = 0;
 
-    // Expire trial memberships past trial end
-    const trialExpired = db.prepare(
-      `UPDATE users SET membership_status = 'expired'
-       WHERE membership_status IN ('trial')
-       AND membership_expiry IS NOT NULL
-       AND membership_expiry < datetime('now')`
-    ).run();
+    // Fetch all trial users and filter in-memory (avoids composite index requirement)
+    const trialSnap = await db.collection('users')
+      .where('membership_status', '==', 'trial')
+      .get();
 
-    // Expire active memberships past expiry
-    const activeExpired = db.prepare(
-      `UPDATE users SET membership_status = 'expired'
-       WHERE membership_status IN ('active')
-       AND membership_expiry IS NOT NULL
-       AND membership_expiry < datetime('now')`
-    ).run();
+    const batch1 = db.batch();
+    trialSnap.forEach(doc => {
+      const data = doc.data();
+      if (data.membership_expiry && data.membership_expiry < now) {
+        batch1.update(doc.ref, { membership_status: 'expired' });
+        totalExpired++;
+      }
+    });
+    if (totalExpired > 0) await batch1.commit();
 
-    // Also expire related membership records
-    db.prepare(
-      `UPDATE memberships SET status = 'expired'
-       WHERE status = 'approved'
-       AND expiry_date IS NOT NULL
-       AND expiry_date < datetime('now')`
-    ).run();
+    // Fetch all active users and filter in-memory
+    const activeSnap = await db.collection('users')
+      .where('membership_status', '==', 'active')
+      .get();
 
-    const totalExpired = (trialExpired?.changes || 0) + (activeExpired?.changes || 0);
+    const batch2 = db.batch();
+    let activeExpired = 0;
+    activeSnap.forEach(doc => {
+      const data = doc.data();
+      if (data.membership_expiry && data.membership_expiry < now) {
+        batch2.update(doc.ref, { membership_status: 'expired' });
+        activeExpired++;
+      }
+    });
+    if (activeExpired > 0) await batch2.commit();
+
+    // Expire related membership records
+    const membershipsSnap = await db.collection('memberships')
+      .where('status', '==', 'approved')
+      .get();
+
+    const batch3 = db.batch();
+    let memExpired = 0;
+    membershipsSnap.forEach(doc => {
+      const data = doc.data();
+      if (data.expiry_date && data.expiry_date < now) {
+        batch3.update(doc.ref, { status: 'expired' });
+        memExpired++;
+      }
+    });
+    if (memExpired > 0) await batch3.commit();
+
+    totalExpired += activeExpired;
     if (totalExpired > 0) {
       console.log(`Membership expiry: ${totalExpired} user(s) expired`);
     }
 
     return totalExpired;
   } catch (err) {
-    console.error('Membership expiry check error:', err);
+    console.error('Membership expiry check error:', err.message);
     return 0;
   }
 }

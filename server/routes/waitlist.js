@@ -1,9 +1,8 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 const auth = require('../middleware/auth');
-const notificationService = require('../services/notificationService');
 
 const router = express.Router();
 
@@ -15,32 +14,43 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// GET /api/waitlist/my — user's waitlist entries
-router.get('/my', auth, (req, res) => {
+router.get('/my', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const entries = db.prepare(`
-      SELECT w.*, e.name as event_name, e.event_date, e.venue, e.cover_image, e.available_seats, e.max_capacity
-      FROM waitlist w
-      JOIN events e ON w.event_id = e.id
-      WHERE w.user_id = ?
-      ORDER BY w.created_at DESC
-    `).all(req.user.id);
-    res.json({ success: true, data: entries });
+    const db = getFirestore();
+    const snapshot = await db.collection('waitlist')
+      .where('user_id', '==', req.user.id)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const entries = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(entries.map(async (w) => {
+      const event = await getDoc('events', w.event_id);
+      return {
+        ...w,
+        event_name: event?.name || null,
+        event_date: event?.event_date || null,
+        venue: event?.venue || null,
+        cover_image: event?.cover_image || null,
+        available_seats: event?.available_seats || 0,
+        max_capacity: event?.max_capacity || 0,
+      };
+    }));
+
+    res.json({ success: true, data: enriched });
   } catch (err) {
     console.error('Get waitlist error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// POST /api/waitlist/:eventId — join waitlist
-router.post('/:eventId', auth, (req, res) => {
+router.post('/:eventId', auth, async (req, res) => {
   try {
     const { eventId } = req.params;
     const quantity = Math.min(Math.max(parseInt(req.body.quantity) || 1, 1), 10);
-    const db = getDb();
+    const db = getFirestore();
 
-    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+    const event = await getDoc('events', eventId);
     if (!event) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
@@ -53,15 +63,26 @@ router.post('/:eventId', auth, (req, res) => {
       return res.status(400).json({ success: false, message: 'Cannot join waitlist for this event' });
     }
 
-    const existing = db.prepare("SELECT id FROM waitlist WHERE user_id = ? AND event_id = ? AND status = 'waiting'").get(req.user.id, eventId);
-    if (existing) {
+    const existingSnap = await db.collection('waitlist')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', eventId)
+      .where('status', '==', 'waiting')
+      .limit(1)
+      .get();
+
+    if (!existingSnap.empty) {
       return res.status(400).json({ success: false, message: 'You are already on the waitlist for this event' });
     }
 
     const id = uuidv4();
-    db.prepare(
-      'INSERT INTO waitlist (id, user_id, event_id, quantity, status) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, req.user.id, eventId, quantity, 'waiting');
+    await db.collection('waitlist').doc(id).set({
+      id,
+      user_id: req.user.id,
+      event_id: eventId,
+      quantity,
+      status: 'waiting',
+      created_at: new Date().toISOString(),
+    });
 
     res.status(201).json({ success: true, data: { id }, message: 'Added to waitlist' });
   } catch (err) {
@@ -70,16 +91,16 @@ router.post('/:eventId', auth, (req, res) => {
   }
 });
 
-// DELETE /api/waitlist/:id — leave waitlist
-router.delete('/:id', auth, (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const entry = db.prepare('SELECT * FROM waitlist WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-    if (!entry) {
+    const db = getFirestore();
+    const entry = await getDoc('waitlist', req.params.id);
+
+    if (!entry || entry.user_id !== req.user.id) {
       return res.status(404).json({ success: false, message: 'Waitlist entry not found' });
     }
 
-    db.prepare("UPDATE waitlist SET status = 'cancelled' WHERE id = ?").run(req.params.id);
+    await db.collection('waitlist').doc(req.params.id).update({ status: 'cancelled' });
     res.json({ success: true, message: 'Removed from waitlist' });
   } catch (err) {
     console.error('Leave waitlist error:', err);

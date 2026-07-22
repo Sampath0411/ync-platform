@@ -1,22 +1,38 @@
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/init');
+const { getFirestore } = require('../db/firebase');
 
-function createNotification(userId, type, title, message) {
-  const db = getDb();
+async function createNotification(userId, type, title, message) {
+  const db = getFirestore();
   const id = uuidv4();
-  db.prepare(
-    'INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, userId, type, title, message);
-  return { id, user_id: userId, type, title, message, is_read: 0, is_global: 0 };
+  const notification = {
+    id,
+    user_id: userId,
+    type,
+    title,
+    message,
+    is_read: 0,
+    is_global: 0,
+    created_at: new Date().toISOString(),
+  };
+  await db.collection('notifications').doc(id).set(notification);
+  return notification;
 }
 
-function sendGlobalNotification(type, title, message) {
-  const db = getDb();
+async function sendGlobalNotification(type, title, message) {
+  const db = getFirestore();
   const id = uuidv4();
-  db.prepare(
-    'INSERT INTO notifications (id, user_id, type, title, message, is_global) VALUES (?, NULL, ?, ?, ?, 1)'
-  ).run(id, type, title, message);
-  return { id, type, title, message, is_global: 1 };
+  const notification = {
+    id,
+    user_id: null,
+    type,
+    title,
+    message,
+    is_global: 1,
+    is_read: 0,
+    created_at: new Date().toISOString(),
+  };
+  await db.collection('notifications').doc(id).set(notification);
+  return notification;
 }
 
 function sendMembershipNotification(userId, status, adminNotes) {

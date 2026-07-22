@@ -1,3 +1,4 @@
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class TestimonialRepository extends BaseRepository {
@@ -5,41 +6,58 @@ class TestimonialRepository extends BaseRepository {
     super('testimonials');
   }
 
-  findPublished() {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare(
-        `SELECT t.*, u.name as user_name, u.profile_photo as user_profile_photo
-         FROM testimonials t
-         LEFT JOIN users u ON t.user_id = u.id
-         WHERE t.is_published = 1
-         ORDER BY t.created_at DESC`
-      )
-      .all();
+  async findPublished() {
+    const db = getFirestore();
+    const snapshot = await db.collection('testimonials')
+      .where('is_published', '==', 1)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const testimonials = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(testimonials.map(async (t) => {
+      if (!t.user_id) return t;
+      const user = await getDoc('users', t.user_id);
+      return { ...t, user_name: user?.name || null, user_profile_photo: user?.profile_photo || null };
+    }));
+
+    return enriched;
   }
 
-  findAllWithUser() {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare(
-        `SELECT t.*, u.name as user_name, u.email as user_email, u.profile_photo as user_profile_photo
-         FROM testimonials t
-         LEFT JOIN users u ON t.user_id = u.id
-         ORDER BY t.created_at DESC`
-      )
-      .all();
+  async findAllWithUser() {
+    const db = getFirestore();
+    const snapshot = await db.collection('testimonials')
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const testimonials = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(testimonials.map(async (t) => {
+      if (!t.user_id) return t;
+      const user = await getDoc('users', t.user_id);
+      return {
+        ...t,
+        user_name: user?.name || null,
+        user_email: user?.email || null,
+        user_profile_photo: user?.profile_photo || null,
+      };
+    }));
+
+    return enriched;
   }
 
-  findByIdWithUser(id) {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare(
-        `SELECT t.*, u.name as user_name, u.email as user_email, u.profile_photo as user_profile_photo
-         FROM testimonials t
-         LEFT JOIN users u ON t.user_id = u.id
-         WHERE t.id = ?`
-      )
-      .get(id);
+  async findByIdWithUser(id) {
+    const t = await this.findById(id);
+    if (!t) return null;
+    if (!t.user_id) return t;
+
+    const user = await getDoc('users', t.user_id);
+    return {
+      ...t,
+      user_name: user?.name || null,
+      user_email: user?.email || null,
+      user_profile_photo: user?.profile_photo || null,
+    };
   }
 }
 

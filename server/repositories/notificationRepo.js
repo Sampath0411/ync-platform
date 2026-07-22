@@ -1,4 +1,4 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class NotificationRepository extends BaseRepository {
@@ -6,49 +6,71 @@ class NotificationRepository extends BaseRepository {
     super('notifications');
   }
 
-  findByUser(userId) {
-    const db = getDb();
-    return db
-      .prepare(
-        "SELECT * FROM notifications WHERE user_id = ? OR is_global = 1 ORDER BY created_at DESC"
-      )
-      .all(userId);
+  async findByUser(userId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('notifications')
+      .where('user_id', '==', userId)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const personal = snapshotToArray(snapshot);
+
+    // Also get global notifications
+    const globalSnap = await db.collection('notifications')
+      .where('is_global', '==', 1)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const global = snapshotToArray(globalSnap);
+
+    // Merge and sort by created_at desc
+    const combined = [...personal, ...global];
+    combined.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    return combined;
   }
 
-  getUnreadCount(userId) {
-    const db = getDb();
-    const row = db
-      .prepare(
-        "SELECT COUNT(*) as count FROM notifications WHERE (user_id = ? OR is_global = 1) AND is_read = 0"
-      )
-      .get(userId);
-    return row ? row.count : 0;
+  async getUnreadCount(userId) {
+    const db = getFirestore();
+    const snap1 = await db.collection('notifications')
+      .where('user_id', '==', userId)
+      .where('is_read', '==', 0)
+      .get();
+
+    const snap2 = await db.collection('notifications')
+      .where('is_global', '==', 1)
+      .where('is_read', '==', 0)
+      .get();
+
+    return snap1.size + snap2.size;
   }
 
-  markAsRead(id) {
-    const db = getDb();
-    db.prepare("UPDATE notifications SET is_read = 1 WHERE id = ?").run(id);
+  async markAsRead(id) {
+    const db = getFirestore();
+    await db.collection('notifications').doc(id).update({ is_read: 1 });
     return this.findById(id);
   }
 
-  markAllAsRead(userId) {
-    const db = getDb();
-    db.prepare("UPDATE notifications SET is_read = 1 WHERE (user_id = ? OR is_global = 1) AND is_read = 0").run(userId);
+  async markAllAsRead(userId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('notifications')
+      .where('user_id', '==', userId)
+      .where('is_read', '==', 0)
+      .get();
+
+    const batch = db.batch();
+    snapshot.forEach(doc => {
+      batch.update(doc.ref, { is_read: 1 });
+    });
+    await batch.commit();
+
     return { success: true };
   }
 
-  createGlobal(data) {
-    const db = getDb();
+  async createGlobal(data) {
     const { v4: uuidv4 } = require('uuid');
     const id = uuidv4();
-    data.id = id;
-    data.is_global = 1;
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const placeholders = keys.map(() => '?').join(', ');
-    const columns = keys.join(', ');
-    db.prepare(`INSERT INTO notifications (${columns}) VALUES (${placeholders})`).run(...values);
-    return this.findById(id);
+    const notification = { id, is_global: 1, ...data };
+    return this.create(notification);
   }
 }
 

@@ -25,14 +25,14 @@ function handleErrors(req, res, next) {
   next();
 }
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { type } = req.query;
     let announcements;
     if (type) {
-      announcements = announcementRepo.findByType(type);
+      announcements = await announcementRepo.findByType(type);
     } else {
-      announcements = announcementRepo.findPublished();
+      announcements = await announcementRepo.findPublished();
     }
     res.json({ success: true, data: announcements });
   } catch (err) {
@@ -41,7 +41,7 @@ router.get('/', (req, res) => {
   }
 });
 
-router.post('/', adminAuth, announcementRules, handleErrors, (req, res) => {
+router.post('/', adminAuth, announcementRules, handleErrors, async (req, res) => {
   try {
     const { title, content, type, priority, is_published } = req.body;
 
@@ -53,9 +53,11 @@ router.post('/', adminAuth, announcementRules, handleErrors, (req, res) => {
       type: type || 'news',
       priority: priority || 'medium',
       is_published: is_published !== undefined ? (is_published ? 1 : 0) : 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
 
-    const announcement = announcementRepo.create(announcementData);
+    const announcement = await announcementRepo.create(announcementData);
     res.status(201).json({
       success: true,
       data: announcement,
@@ -67,9 +69,9 @@ router.post('/', adminAuth, announcementRules, handleErrors, (req, res) => {
   }
 });
 
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = announcementRepo.findById(req.params.id);
+    const existing = await announcementRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Announcement not found' });
     }
@@ -81,15 +83,12 @@ router.put('/:id', adminAuth, (req, res) => {
       if (req.body[field] !== undefined) {
         if (field === 'title') updates[field] = sanitize(req.body[field]);
         else if (field === 'content') updates[field] = sanitizeMultiline(req.body[field]);
-        else if (field === 'is_published') {
-          updates[field] = req.body[field] ? 1 : 0;
-        } else {
-          updates[field] = req.body[field];
-        }
+        else if (field === 'is_published') updates[field] = req.body[field] ? 1 : 0;
+        else updates[field] = req.body[field];
       }
     }
 
-    const announcement = announcementRepo.update(req.params.id, updates);
+    const announcement = await announcementRepo.update(req.params.id, updates);
     res.json({
       success: true,
       data: announcement,
@@ -101,14 +100,14 @@ router.put('/:id', adminAuth, (req, res) => {
   }
 });
 
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = announcementRepo.findById(req.params.id);
+    const existing = await announcementRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Announcement not found' });
     }
 
-    announcementRepo.delete(req.params.id);
+    await announcementRepo.delete(req.params.id);
     res.json({ success: true, message: 'Announcement deleted successfully' });
   } catch (err) {
     console.error('Delete announcement error:', err);

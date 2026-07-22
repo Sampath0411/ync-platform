@@ -24,5 +24,7 @@ services:
         sync: false  # you'll manually set this
       - key: VAPID_PRIVATE_KEY
         sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false  # paste the entire Firebase service account JSON as a single-line string
       - key: CORS_ORIGIN
         value: auto  # Render auto-sets this to your .onrender.com URL

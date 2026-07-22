@@ -1,6 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 const contactRepo = require('../repositories/contactRepo');
 const adminAuth = require('../middleware/adminAuth');
 
@@ -24,7 +25,7 @@ function handleErrors(req, res, next) {
   next();
 }
 
-router.post('/', contactRules, handleErrors, (req, res) => {
+router.post('/', contactRules, handleErrors, async (req, res) => {
   try {
     const { name, email, subject, message } = req.body;
 
@@ -35,33 +36,38 @@ router.post('/', contactRules, handleErrors, (req, res) => {
       email,
       subject: subject || null,
       message,
+      is_read: 0,
+      created_at: new Date().toISOString(),
     };
 
-    const contact = contactRepo.create(contactData);
-    res.status(201).json({
-      success: true,
-      data: contact,
-      message: 'Message sent successfully',
-    });
+    const contact = await contactRepo.create(contactData);
+    res.status(201).json({ success: true, data: contact, message: 'Message sent successfully' });
   } catch (err) {
     console.error('Submit contact error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-router.get('/', adminAuth, (req, res) => {
+router.get('/', adminAuth, async (req, res) => {
   try {
     const { is_read, page = 1, limit = 50 } = req.query;
 
     let messages;
     if (is_read === '0') {
-      messages = contactRepo.findUnread();
+      messages = await contactRepo.findUnread();
     } else {
-      const db = require('../db/init').getDb();
-      const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
-      messages = db
-        .prepare('SELECT * FROM contact_messages ORDER BY created_at DESC LIMIT ? OFFSET ?')
-        .all(parseInt(limit, 10), offset);
+      const db = getFirestore();
+      const p = Math.max(1, parseInt(page, 10));
+      const l = Math.min(100, parseInt(limit, 10));
+      const offset = (p - 1) * l;
+
+      const snap = await db.collection('contact_messages')
+        .orderBy('created_at', 'desc')
+        .limit(l)
+        .offset(offset)
+        .get();
+
+      messages = snapshotToArray(snap);
     }
 
     res.json({ success: true, data: messages });
@@ -71,14 +77,14 @@ router.get('/', adminAuth, (req, res) => {
   }
 });
 
-router.put('/:id/read', adminAuth, (req, res) => {
+router.put('/:id/read', adminAuth, async (req, res) => {
   try {
-    const message = contactRepo.findById(req.params.id);
+    const message = await contactRepo.findById(req.params.id);
     if (!message) {
       return res.status(404).json({ success: false, message: 'Message not found' });
     }
 
-    contactRepo.update(req.params.id, { is_read: 1 });
+    await contactRepo.update(req.params.id, { is_read: 1 });
     res.json({ success: true, message: 'Message marked as read' });
   } catch (err) {
     console.error('Mark contact read error:', err);

@@ -1,6 +1,6 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/init');
+const { getFirestore } = require('../db/firebase');
 const ticketRepo = require('../repositories/ticketRepo');
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
@@ -8,9 +8,9 @@ const authOrAdmin = require('../middleware/authOrAdmin');
 
 const router = express.Router();
 
-router.get('/my', auth, (req, res) => {
+router.get('/my', auth, async (req, res) => {
   try {
-    const tickets = ticketRepo.findByUser(req.user.id);
+    const tickets = await ticketRepo.findByUser(req.user.id);
     res.json({ success: true, data: tickets });
   } catch (err) {
     console.error('Get user tickets error:', err);
@@ -18,9 +18,9 @@ router.get('/my', auth, (req, res) => {
   }
 });
 
-router.get('/:id', authOrAdmin, (req, res) => {
+router.get('/:id', authOrAdmin, async (req, res) => {
   try {
-    const ticket = ticketRepo.findById(req.params.id);
+    const ticket = await ticketRepo.findById(req.params.id);
     if (!ticket) {
       return res.status(404).json({ success: false, message: 'Ticket not found' });
     }
@@ -36,7 +36,7 @@ router.get('/:id', authOrAdmin, (req, res) => {
   }
 });
 
-router.post('/validate', adminAuth, (req, res) => {
+router.post('/validate', adminAuth, async (req, res) => {
   try {
     const { ticket_number, qr_data } = req.body;
 
@@ -55,12 +55,12 @@ router.post('/validate', adminAuth, (req, res) => {
       }
     }
 
-    const ticket = ticketRepo.findByTicketNumber(ticketNumber);
+    const ticket = await ticketRepo.findByTicketNumber(ticketNumber);
     if (!ticket) {
       return res.status(404).json({ success: false, message: 'Ticket not found' });
     }
 
-    const db = getDb();
+    const db = getFirestore();
     const validationId = uuidv4();
     let action = 'validated';
     let notes = null;
@@ -77,12 +77,17 @@ router.post('/validate', adminAuth, (req, res) => {
     }
 
     if (action === 'validated') {
-      ticketRepo.updateStatus(ticket.id, 'used');
+      await ticketRepo.updateStatus(ticket.id, 'used');
     }
 
-    db.prepare(
-      'INSERT INTO ticket_validations (id, ticket_id, validator_id, action, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(validationId, ticket.id, req.admin.id, action, notes);
+    await db.collection('ticket_validations').doc(validationId).set({
+      id: validationId,
+      ticket_id: ticket.id,
+      validator_id: req.admin.id,
+      action,
+      notes,
+      created_at: new Date().toISOString(),
+    });
 
     if (action !== 'validated') {
       return res.status(400).json({

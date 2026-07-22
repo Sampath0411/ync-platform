@@ -6,3 +6,5 @@ data/
 uploads/
 .DS_Store
 .claude/
+firebase-key.json
+*.service-account.json

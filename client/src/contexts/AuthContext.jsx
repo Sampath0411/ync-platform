@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import apiClient from '@/api/client';
+import apiClient, { authAPI } from '@/api/client';
+import { signInWithGoogle } from '@/services/firebaseAuth';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext(null);
@@ -88,6 +89,30 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
+  const firebaseLogin = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const { idToken } = await signInWithGoogle();
+      const res = await authAPI.firebaseAuth(idToken);
+      const data = res.data;
+      if (data?.token) {
+        localStorage.setItem('ync_token', data.token);
+        setUser(data.user);
+        toast.success('Welcome! Signed in with Google');
+        return data.user;
+      }
+      throw new Error(res.message || 'Google sign-in failed');
+    } catch (err) {
+      // Firebase popup closed / error
+      const msg = err.data?.message || err.message || 'Google sign-in failed';
+      setError(msg);
+      throw new Error(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const register = useCallback(async (data) => {
     setError(null);
     setLoading(true);
@@ -124,7 +149,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, loading, error,
-      login, adminLogin, register, logout, updateUser, checkAuth,
+      login, adminLogin, firebaseLogin, register, logout, updateUser, checkAuth,
       isAuthenticated: !!user,
       isAdmin: user?.role === 'admin',
     }}>

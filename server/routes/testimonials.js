@@ -24,10 +24,9 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// Public: Get all published testimonials (with user info)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const testimonials = testimonialRepo.findPublished();
+    const testimonials = await testimonialRepo.findPublished();
     res.json({ success: true, data: testimonials });
   } catch (err) {
     console.error('List testimonials error:', err);
@@ -35,10 +34,9 @@ router.get('/', (req, res) => {
   }
 });
 
-// Admin: Get all testimonials (including unpublished, with user info)
-router.get('/all', adminAuth, (req, res) => {
+router.get('/all', adminAuth, async (req, res) => {
   try {
-    const testimonials = testimonialRepo.findAllWithUser();
+    const testimonials = await testimonialRepo.findAllWithUser();
     res.json({ success: true, data: testimonials });
   } catch (err) {
     console.error('List all testimonials error:', err);
@@ -46,14 +44,12 @@ router.get('/all', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Create a new testimonial
-router.post('/', adminAuth, testimonialRules, handleErrors, (req, res) => {
+router.post('/', adminAuth, testimonialRules, handleErrors, async (req, res) => {
   try {
     const { user_id, content, rating, is_published } = req.body;
 
-    // If user_id provided, verify it exists
     if (user_id) {
-      const user = userRepo.findById(user_id);
+      const user = await userRepo.findById(user_id);
       if (!user) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -66,10 +62,11 @@ router.post('/', adminAuth, testimonialRules, handleErrors, (req, res) => {
       content: sanitizeMultiline(content),
       rating: rating !== undefined ? rating : 5,
       is_published: is_published !== undefined ? (is_published ? 1 : 0) : 1,
+      created_at: new Date().toISOString(),
     };
 
-    const testimonial = testimonialRepo.create(testimonialData);
-    const result = testimonialRepo.findByIdWithUser(id);
+    await testimonialRepo.create(testimonialData);
+    const result = await testimonialRepo.findByIdWithUser(id);
     res.status(201).json({
       success: true,
       data: result,
@@ -81,10 +78,9 @@ router.post('/', adminAuth, testimonialRules, handleErrors, (req, res) => {
   }
 });
 
-// Admin: Update a testimonial
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = testimonialRepo.findById(req.params.id);
+    const existing = await testimonialRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Testimonial not found' });
     }
@@ -95,23 +91,20 @@ router.put('/:id', adminAuth, (req, res) => {
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         if (field === 'content') updates[field] = sanitizeMultiline(req.body[field]);
-        else if (field === 'is_published') {
-          updates[field] = req.body[field] ? 1 : 0;
-        } else {
-          updates[field] = req.body[field];
-        }
+        else if (field === 'is_published') updates[field] = req.body[field] ? 1 : 0;
+        else updates[field] = req.body[field];
       }
     }
 
     if (updates.user_id) {
-      const user = userRepo.findById(updates.user_id);
+      const user = await userRepo.findById(updates.user_id);
       if (!user) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
     }
 
-    const testimonial = testimonialRepo.update(req.params.id, updates);
-    const result = testimonialRepo.findByIdWithUser(req.params.id);
+    await testimonialRepo.update(req.params.id, updates);
+    const result = await testimonialRepo.findByIdWithUser(req.params.id);
     res.json({
       success: true,
       data: result,
@@ -123,15 +116,14 @@ router.put('/:id', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Delete a testimonial
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = testimonialRepo.findById(req.params.id);
+    const existing = await testimonialRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Testimonial not found' });
     }
 
-    testimonialRepo.delete(req.params.id);
+    await testimonialRepo.delete(req.params.id);
     res.json({ success: true, message: 'Testimonial deleted successfully' });
   } catch (err) {
     console.error('Delete testimonial error:', err);

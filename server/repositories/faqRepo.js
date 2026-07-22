@@ -1,3 +1,4 @@
+const { getFirestore, snapshotToArray } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class FaqRepository extends BaseRepository {
@@ -5,18 +6,23 @@ class FaqRepository extends BaseRepository {
     super('faqs');
   }
 
-  findPublished() {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare('SELECT * FROM faqs WHERE is_published = 1 ORDER BY sort_order ASC, created_at DESC')
-      .all();
+  async findPublished() {
+    const db = getFirestore();
+    const snapshot = await db.collection('faqs')
+      .where('is_published', '==', 1)
+      .orderBy('sort_order', 'asc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 
-  findByCategory(category) {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare('SELECT * FROM faqs WHERE category = ? ORDER BY sort_order ASC, created_at DESC')
-      .all(category);
+  async findByCategory(category) {
+    const db = getFirestore();
+    const snapshot = await db.collection('faqs')
+      .where('category', '==', category)
+      .where('is_published', '==', 1)
+      .orderBy('sort_order', 'asc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 }
 

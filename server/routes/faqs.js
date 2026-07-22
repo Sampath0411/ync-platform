@@ -25,15 +25,14 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// Public: Get all published FAQs
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { category } = req.query;
     let faqs;
     if (category) {
-      faqs = faqRepo.findByCategory(category);
+      faqs = await faqRepo.findByCategory(category);
     } else {
-      faqs = faqRepo.findPublished();
+      faqs = await faqRepo.findPublished();
     }
     res.json({ success: true, data: faqs });
   } catch (err) {
@@ -42,10 +41,9 @@ router.get('/', (req, res) => {
   }
 });
 
-// Admin: Get all FAQs (including unpublished)
-router.get('/all', adminAuth, (req, res) => {
+router.get('/all', adminAuth, async (req, res) => {
   try {
-    const faqs = faqRepo.findAll();
+    const faqs = await faqRepo.findAll();
     res.json({ success: true, data: faqs });
   } catch (err) {
     console.error('List all FAQs error:', err);
@@ -53,8 +51,7 @@ router.get('/all', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Create a new FAQ
-router.post('/', adminAuth, faqRules, handleErrors, (req, res) => {
+router.post('/', adminAuth, faqRules, handleErrors, async (req, res) => {
   try {
     const { question, answer, category, sort_order, is_published } = req.body;
 
@@ -66,9 +63,10 @@ router.post('/', adminAuth, faqRules, handleErrors, (req, res) => {
       category: category || null,
       sort_order: sort_order !== undefined ? sort_order : 0,
       is_published: is_published !== undefined ? (is_published ? 1 : 0) : 1,
+      created_at: new Date().toISOString(),
     };
 
-    const faq = faqRepo.create(faqData);
+    const faq = await faqRepo.create(faqData);
     res.status(201).json({
       success: true,
       data: faq,
@@ -80,10 +78,9 @@ router.post('/', adminAuth, faqRules, handleErrors, (req, res) => {
   }
 });
 
-// Admin: Update a FAQ
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = faqRepo.findById(req.params.id);
+    const existing = await faqRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'FAQ not found' });
     }
@@ -95,15 +92,12 @@ router.put('/:id', adminAuth, (req, res) => {
       if (req.body[field] !== undefined) {
         if (field === 'question') updates[field] = sanitize(req.body[field]);
         else if (field === 'answer') updates[field] = sanitizeMultiline(req.body[field]);
-        else if (field === 'is_published') {
-          updates[field] = req.body[field] ? 1 : 0;
-        } else {
-          updates[field] = req.body[field];
-        }
+        else if (field === 'is_published') updates[field] = req.body[field] ? 1 : 0;
+        else updates[field] = req.body[field];
       }
     }
 
-    const faq = faqRepo.update(req.params.id, updates);
+    const faq = await faqRepo.update(req.params.id, updates);
     res.json({
       success: true,
       data: faq,
@@ -115,15 +109,14 @@ router.put('/:id', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Delete a FAQ
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = faqRepo.findById(req.params.id);
+    const existing = await faqRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'FAQ not found' });
     }
 
-    faqRepo.delete(req.params.id);
+    await faqRepo.delete(req.params.id);
     res.json({ success: true, message: 'FAQ deleted successfully' });
   } catch (err) {
     console.error('Delete FAQ error:', err);

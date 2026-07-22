@@ -1,3 +1,4 @@
+const { getFirestore, snapshotToArray } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class SponsorRepository extends BaseRepository {
@@ -5,11 +6,13 @@ class SponsorRepository extends BaseRepository {
     super('sponsors');
   }
 
-  findActive() {
-    const db = require('../db/init').getDb();
-    return db
-      .prepare('SELECT * FROM sponsors WHERE is_active = 1 ORDER BY sort_order ASC, created_at DESC')
-      .all();
+  async findActive() {
+    const db = getFirestore();
+    const snapshot = await db.collection('sponsors')
+      .where('is_active', '==', 1)
+      .orderBy('sort_order', 'asc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 }
 

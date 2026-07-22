@@ -1,13 +1,13 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc } = require('../db/firebase');
 const config = require('../config/default');
 const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -15,12 +15,14 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    const db = getDb();
-    const admin = db.prepare('SELECT * FROM admin_users WHERE email = ?').get(email);
+    const db = getFirestore();
+    const snapshot = await db.collection('admin_users').where('email', '==', email).limit(1).get();
 
-    if (!admin) {
+    if (snapshot.empty) {
       return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
     }
+
+    const admin = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
 
     const valid = bcrypt.compareSync(password, admin.password_hash);
     if (!valid) {
@@ -37,10 +39,7 @@ router.post('/login', (req, res) => {
 
     res.json({
       success: true,
-      data: {
-        admin: adminData,
-        token,
-      },
+      data: { admin: adminData, token },
       message: 'Admin login successful',
     });
   } catch (err) {
@@ -49,10 +48,9 @@ router.post('/login', (req, res) => {
   }
 });
 
-router.get('/me', adminAuth, (req, res) => {
+router.get('/me', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
-    const admin = db.prepare('SELECT * FROM admin_users WHERE id = ?').get(req.admin.id);
+    const admin = await getDoc('admin_users', req.admin.id);
     if (!admin) {
       return res.status(404).json({ success: false, message: 'Admin not found' });
     }

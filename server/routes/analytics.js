@@ -1,23 +1,45 @@
 const express = require('express');
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray } = require('../db/firebase');
 const adminAuth = require('../middleware/adminAuth');
 
 const router = express.Router();
 
-// GET /api/admin/analytics/overview — main dashboard stats
-router.get('/overview', adminAuth, (req, res) => {
+router.get('/overview', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
+    const db = getFirestore();
 
-    const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get()?.count || 0;
-    const activeUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE is_active = 1").get()?.count || 0;
-    const totalMembers = db.prepare("SELECT COUNT(*) as count FROM users WHERE membership_status IN ('trial', 'active')").get()?.count || 0;
-    const totalEvents = db.prepare('SELECT COUNT(*) as count FROM events').get()?.count || 0;
-    const upcomingEvents = db.prepare("SELECT COUNT(*) as count FROM events WHERE status = 'upcoming'").get()?.count || 0;
-    const totalBookings = db.prepare('SELECT COUNT(*) as count FROM bookings').get()?.count || 0;
-    const confirmedBookings = db.prepare("SELECT COUNT(*) as count FROM bookings WHERE status = 'confirmed'").get()?.count || 0;
-    const totalRevenue = db.prepare('SELECT COALESCE(SUM(total_amount), 0) as total FROM bookings WHERE status = ?').get('confirmed')?.total || 0;
-    const totalTickets = db.prepare('SELECT COUNT(*) as count FROM tickets').get()?.count || 0;
+    const [usersSnap, eventsSnap, bookingsSnap, ticketsSnap] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('events').get(),
+      db.collection('bookings').get(),
+      db.collection('tickets').get(),
+    ]);
+
+    let totalUsers = 0, activeUsers = 0, totalMembers = 0;
+    usersSnap.forEach(doc => {
+      const u = doc.data();
+      totalUsers++;
+      if (u.is_active) activeUsers++;
+      if (u.membership_status === 'trial' || u.membership_status === 'active') totalMembers++;
+    });
+
+    let totalEvents = 0, upcomingEvents = 0;
+    eventsSnap.forEach(doc => {
+      totalEvents++;
+      if (doc.data().status === 'upcoming') upcomingEvents++;
+    });
+
+    let totalBookings = 0, confirmedBookings = 0, totalRevenue = 0;
+    bookingsSnap.forEach(doc => {
+      const b = doc.data();
+      totalBookings++;
+      if (b.status === 'confirmed') {
+        confirmedBookings++;
+        totalRevenue += (b.total_amount || 0);
+      }
+    });
+
+    const totalTickets = ticketsSnap.size;
 
     res.json({
       success: true,
@@ -35,17 +57,27 @@ router.get('/overview', adminAuth, (req, res) => {
   }
 });
 
-// GET /api/admin/analytics/revenue — revenue over time (monthly)
-router.get('/revenue', adminAuth, (req, res) => {
+router.get('/revenue', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
-    const months = db.prepare(`
-      SELECT strftime('%Y-%m', created_at) as month,
-             COUNT(*) as bookings,
-             COALESCE(SUM(total_amount), 0) as revenue
-      FROM bookings WHERE status = 'confirmed'
-      GROUP BY month ORDER BY month ASC LIMIT 12
-    `).all();
+    const db = getFirestore();
+    const snap = await db.collection('bookings')
+      .where('status', '==', 'confirmed')
+      .orderBy('created_at', 'asc')
+      .get();
+
+    // Group by month
+    const monthMap = {};
+    snap.forEach(doc => {
+      const b = doc.data();
+      if (b.created_at) {
+        const month = b.created_at.substring(0, 7); // YYYY-MM
+        if (!monthMap[month]) monthMap[month] = { month, bookings: 0, revenue: 0 };
+        monthMap[month].bookings++;
+        monthMap[month].revenue += (b.total_amount || 0);
+      }
+    });
+
+    const months = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month)).slice(-12);
 
     res.json({ success: true, data: months });
   } catch (err) {
@@ -54,65 +86,102 @@ router.get('/revenue', adminAuth, (req, res) => {
   }
 });
 
-// GET /api/admin/analytics/events — event popularity stats
-router.get('/events', adminAuth, (req, res) => {
+router.get('/events', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
-    const popular = db.prepare(`
-      SELECT e.id, e.name, e.category, e.event_date, e.status,
-             COUNT(b.id) as booking_count,
-             COALESCE(SUM(b.quantity), 0) as total_tickets,
-             e.max_capacity
-      FROM events e
-      LEFT JOIN bookings b ON e.id = b.event_id AND b.status = 'confirmed'
-      GROUP BY e.id
-      ORDER BY booking_count DESC
-      LIMIT 20
-    `).all();
+    const db = getFirestore();
 
-    // Category distribution
-    const categories = db.prepare(`
-      SELECT category, COUNT(*) as count FROM events
-      WHERE category IS NOT NULL GROUP BY category ORDER BY count DESC
-    `).all();
+    const [eventsSnap, bookingsSnap] = await Promise.all([
+      db.collection('events').get(),
+      db.collection('bookings').where('status', '==', 'confirmed').get(),
+    ]);
 
-    // Status distribution
-    const statusDistribution = db.prepare(`
-      SELECT status, COUNT(*) as count FROM events
-      GROUP BY status
-    `).all();
+    // Build booking counts per event
+    const bookingCounts = {};
+    const ticketCounts = {};
+    bookingsSnap.forEach(doc => {
+      const b = doc.data();
+      if (b.event_id) {
+        bookingCounts[b.event_id] = (bookingCounts[b.event_id] || 0) + 1;
+        ticketCounts[b.event_id] = (ticketCounts[b.event_id] || 0) + (b.quantity || 0);
+      }
+    });
 
-    res.json({ success: true, data: { popular, categories, statusDistribution } });
+    const popular = [];
+    const catMap = {};
+    const statusMap = {};
+
+    eventsSnap.forEach(doc => {
+      const e = { id: doc.id, ...doc.data() };
+      popular.push({
+        id: e.id, name: e.name, category: e.category, event_date: e.event_date,
+        status: e.status, max_capacity: e.max_capacity,
+        booking_count: bookingCounts[e.id] || 0,
+        total_tickets: ticketCounts[e.id] || 0,
+      });
+
+      const cat = e.category || 'uncategorized';
+      catMap[cat] = (catMap[cat] || 0) + 1;
+
+      const st = e.status || 'unknown';
+      statusMap[st] = (statusMap[st] || 0) + 1;
+    });
+
+    popular.sort((a, b) => b.booking_count - a.booking_count);
+    const top20 = popular.slice(0, 20);
+
+    const categories = Object.entries(catMap)
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const statusDistribution = Object.entries(statusMap)
+      .map(([status, count]) => ({ status, count }));
+
+    res.json({ success: true, data: { popular: top20, categories, statusDistribution } });
   } catch (err) {
     console.error('Analytics events error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// GET /api/admin/analytics/users — user growth stats
-router.get('/users', adminAuth, (req, res) => {
+router.get('/users', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
+    const db = getFirestore();
+    const snap = await db.collection('users').get();
 
-    // User registrations by month
-    const growth = db.prepare(`
-      SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as registrations
-      FROM users GROUP BY month ORDER BY month ASC LIMIT 12
-    `).all();
+    const growthMap = {};
+    const membershipMap = {};
+    const genderMap = {};
 
-    // Membership breakdown
-    const memberships = db.prepare(`
-      SELECT membership_status, COUNT(*) as count
-      FROM users WHERE membership_status != 'none'
-      GROUP BY membership_status
-    `).all();
+    snap.forEach(doc => {
+      const u = doc.data();
 
-    // Gender distribution
-    const genders = db.prepare(`
-      SELECT gender, COUNT(*) as count FROM users
-      WHERE gender IS NOT NULL AND gender != ''
-      GROUP BY gender
-    `).all();
+      // Growth by month
+      if (u.created_at) {
+        const month = u.created_at.substring(0, 7);
+        growthMap[month] = (growthMap[month] || 0) + 1;
+      }
+
+      // Membership breakdown
+      if (u.membership_status && u.membership_status !== 'none') {
+        membershipMap[u.membership_status] = (membershipMap[u.membership_status] || 0) + 1;
+      }
+
+      // Gender distribution
+      if (u.gender && u.gender !== '') {
+        genderMap[u.gender] = (genderMap[u.gender] || 0) + 1;
+      }
+    });
+
+    const growth = Object.entries(growthMap)
+      .map(([month, registrations]) => ({ month, registrations }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-12);
+
+    const memberships = Object.entries(membershipMap)
+      .map(([membership_status, count]) => ({ membership_status, count }));
+
+    const genders = Object.entries(genderMap)
+      .map(([gender, count]) => ({ gender, count }));
 
     res.json({ success: true, data: { growth, memberships, genders } });
   } catch (err) {

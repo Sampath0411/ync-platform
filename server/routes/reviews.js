@@ -1,7 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
 
@@ -15,71 +15,96 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// GET /api/reviews/event/:eventId — public reviews for an event
-router.get('/event/:eventId', (req, res) => {
+router.get('/event/:eventId', async (req, res) => {
   try {
-    const db = getDb();
-    const reviews = db.prepare(`
-      SELECT r.id, r.rating, r.review, r.created_at, u.name as user_name, u.profile_photo
-      FROM reviews r
-      JOIN users u ON r.user_id = u.id
-      WHERE r.event_id = ? AND r.is_published = 1
-      ORDER BY r.created_at DESC
-    `).all(req.params.eventId);
+    const db = getFirestore();
+    const snap = await db.collection('reviews')
+      .where('event_id', '==', req.params.eventId)
+      .where('is_published', '==', 1)
+      .orderBy('created_at', 'desc')
+      .get();
 
-    const stats = db.prepare(`
-      SELECT COUNT(*) as count, AVG(rating) as average, SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as five,
-             SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as four, SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as three,
-             SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as two, SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one
-      FROM reviews WHERE event_id = ? AND is_published = 1
-    `).get(req.params.eventId);
+    const reviews = [];
+    const s = { count: 0, average: 0, five: 0, four: 0, three: 0, two: 0, one: 0 };
 
-    res.json({ success: true, data: { reviews, stats: stats || { count: 0, average: 0 } } });
+    for (const doc of snap.docs) {
+      const r = { id: doc.id, ...doc.data() };
+      const user = r.user_id ? await getDoc('users', r.user_id) : null;
+      reviews.push({
+        id: r.id, rating: r.rating, review: r.review, created_at: r.created_at,
+        user_name: user?.name || null, profile_photo: user?.profile_photo || null,
+      });
+      s.count++;
+      s.average += r.rating || 0;
+      if (r.rating === 5) s.five++;
+      else if (r.rating === 4) s.four++;
+      else if (r.rating === 3) s.three++;
+      else if (r.rating === 2) s.two++;
+      else if (r.rating === 1) s.one++;
+    }
+
+    if (s.count > 0) s.average = s.average / s.count;
+
+    res.json({ success: true, data: { reviews, stats: s } });
   } catch (err) {
     console.error('Get reviews error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// POST /api/reviews — create a review (must have booking for this event)
 router.post('/', auth, [
   body('event_id').notEmpty().withMessage('Event ID is required'),
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
   body('review').optional().isLength({ max: 2000 }).withMessage('Review must be under 2000 characters'),
-], handleErrors, (req, res) => {
+], handleErrors, async (req, res) => {
   try {
     const { event_id, rating, review } = req.body;
-    const db = getDb();
+    const db = getFirestore();
 
-    const event = db.prepare('SELECT id, status FROM events WHERE id = ?').get(event_id);
+    const event = await getDoc('events', event_id);
     if (!event) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
 
-    // User must have a confirmed booking for this event (past or ongoing)
-    const booking = db.prepare(
-      "SELECT id FROM bookings WHERE user_id = ? AND event_id = ? AND status = 'confirmed'"
-    ).get(req.user.id, event_id);
-    if (!booking) {
+    const bookingSnap = await db.collection('bookings')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', event_id)
+      .where('status', '==', 'confirmed')
+      .limit(1)
+      .get();
+
+    if (bookingSnap.empty) {
       return res.status(403).json({ success: false, message: 'You must have a confirmed booking to review this event' });
     }
 
+    const booking = { id: bookingSnap.docs[0].id, ...bookingSnap.docs[0].data() };
+
     // Check for duplicate review
-    const existingReview = db.prepare('SELECT id FROM reviews WHERE user_id = ? AND event_id = ?').get(req.user.id, event_id);
-    if (existingReview) {
-      // Update existing review instead
-      db.prepare('UPDATE reviews SET rating = ?, review = ?, updated_at = datetime("now") WHERE id = ?')
-        .run(rating, review || null, existingReview.id);
-      const updated = db.prepare('SELECT * FROM reviews WHERE id = ?').get(existingReview.id);
+    const existingSnap = await db.collection('reviews')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', event_id)
+      .limit(1)
+      .get();
+
+    if (!existingSnap.empty) {
+      // Update existing review
+      const existingId = existingSnap.docs[0].id;
+      await db.collection('reviews').doc(existingId).update({
+        rating, review: review || null,
+        updated_at: new Date().toISOString(),
+      });
+      const updated = await getDoc('reviews', existingId);
       return res.json({ success: true, data: updated, message: 'Review updated' });
     }
 
     const id = uuidv4();
-    db.prepare(
-      'INSERT INTO reviews (id, user_id, event_id, booking_id, rating, review) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, req.user.id, event_id, booking.id, rating, review || null);
+    await db.collection('reviews').doc(id).set({
+      id, user_id: req.user.id, event_id, booking_id: booking.id,
+      rating, review: review || null, is_published: 1,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    });
 
-    const newReview = db.prepare('SELECT * FROM reviews WHERE id = ?').get(id);
+    const newReview = await getDoc('reviews', id);
     res.status(201).json({ success: true, data: newReview, message: 'Review submitted' });
   } catch (err) {
     console.error('Create review error:', err);
@@ -87,17 +112,21 @@ router.post('/', auth, [
   }
 });
 
-// GET /api/reviews/my — user's reviews
-router.get('/my', auth, (req, res) => {
+router.get('/my', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const reviews = db.prepare(`
-      SELECT r.*, e.name as event_name, e.cover_image
-      FROM reviews r
-      JOIN events e ON r.event_id = e.id
-      WHERE r.user_id = ?
-      ORDER BY r.created_at DESC
-    `).all(req.user.id);
+    const db = getFirestore();
+    const snap = await db.collection('reviews')
+      .where('user_id', '==', req.user.id)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const reviews = [];
+    for (const doc of snap.docs) {
+      const r = { id: doc.id, ...doc.data() };
+      const event = r.event_id ? await getDoc('events', r.event_id) : null;
+      reviews.push({ ...r, event_name: event?.name || null, cover_image: event?.cover_image || null });
+    }
+
     res.json({ success: true, data: reviews });
   } catch (err) {
     console.error('Get my reviews error:', err);
@@ -105,15 +134,14 @@ router.get('/my', auth, (req, res) => {
   }
 });
 
-// DELETE /api/reviews/:id — delete own review
-router.delete('/:id', auth, (req, res) => {
+router.delete('/:id', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const review = db.prepare('SELECT * FROM reviews WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-    if (!review) {
+    const db = getFirestore();
+    const review = await getDoc('reviews', req.params.id);
+    if (!review || review.user_id !== req.user.id) {
       return res.status(404).json({ success: false, message: 'Review not found' });
     }
-    db.prepare('DELETE FROM reviews WHERE id = ?').run(req.params.id);
+    await db.collection('reviews').doc(req.params.id).delete();
     res.json({ success: true, message: 'Review deleted' });
   } catch (err) {
     console.error('Delete review error:', err);
@@ -121,13 +149,14 @@ router.delete('/:id', auth, (req, res) => {
   }
 });
 
-// Admin: toggle publish
-router.put('/:id/toggle', adminAuth, (req, res) => {
+router.put('/:id/toggle', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
-    const review = db.prepare('SELECT * FROM reviews WHERE id = ?').get(req.params.id);
+    const db = getFirestore();
+    const review = await getDoc('reviews', req.params.id);
     if (!review) return res.status(404).json({ success: false, message: 'Review not found' });
-    db.prepare('UPDATE reviews SET is_published = ? WHERE id = ?').run(review.is_published ? 0 : 1, req.params.id);
+    await db.collection('reviews').doc(req.params.id).update({
+      is_published: review.is_published ? 0 : 1,
+    });
     res.json({ success: true, message: 'Review toggled' });
   } catch (err) {
     console.error('Toggle review error:', err);
@@ -135,17 +164,21 @@ router.put('/:id/toggle', adminAuth, (req, res) => {
   }
 });
 
-// Admin: list all reviews
-router.get('/all', adminAuth, (req, res) => {
+router.get('/all', adminAuth, async (req, res) => {
   try {
-    const db = getDb();
-    const reviews = db.prepare(`
-      SELECT r.*, e.name as event_name, u.name as user_name
-      FROM reviews r
-      JOIN events e ON r.event_id = e.id
-      JOIN users u ON r.user_id = u.id
-      ORDER BY r.created_at DESC
-    `).all();
+    const db = getFirestore();
+    const snap = await db.collection('reviews').orderBy('created_at', 'desc').get();
+
+    const reviews = [];
+    for (const doc of snap.docs) {
+      const r = { id: doc.id, ...doc.data() };
+      const [event, user] = await Promise.all([
+        getDoc('events', r.event_id),
+        getDoc('users', r.user_id),
+      ]);
+      reviews.push({ ...r, event_name: event?.name || null, user_name: user?.name || null });
+    }
+
     res.json({ success: true, data: reviews });
   } catch (err) {
     console.error('List all reviews error:', err);

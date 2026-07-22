@@ -25,9 +25,9 @@ function handleErrors(req, res, next) {
   next();
 }
 
-router.get('/', auth, (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const notifications = notificationRepo.findByUser(req.user.id);
+    const notifications = await notificationRepo.findByUser(req.user.id);
     res.json({ success: true, data: notifications });
   } catch (err) {
     console.error('Get notifications error:', err);
@@ -35,9 +35,9 @@ router.get('/', auth, (req, res) => {
   }
 });
 
-router.get('/unread-count', auth, (req, res) => {
+router.get('/unread-count', auth, async (req, res) => {
   try {
-    const count = notificationRepo.getUnreadCount(req.user.id);
+    const count = await notificationRepo.getUnreadCount(req.user.id);
     res.json({ success: true, data: { count } });
   } catch (err) {
     console.error('Get unread count error:', err);
@@ -45,9 +45,9 @@ router.get('/unread-count', auth, (req, res) => {
   }
 });
 
-router.put('/:id/read', auth, (req, res) => {
+router.put('/:id/read', auth, async (req, res) => {
   try {
-    const notification = notificationRepo.findById(req.params.id);
+    const notification = await notificationRepo.findById(req.params.id);
     if (!notification) {
       return res.status(404).json({ success: false, message: 'Notification not found' });
     }
@@ -56,7 +56,7 @@ router.put('/:id/read', auth, (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    notificationRepo.markAsRead(req.params.id);
+    await notificationRepo.markAsRead(req.params.id);
     res.json({ success: true, message: 'Notification marked as read' });
   } catch (err) {
     console.error('Mark as read error:', err);
@@ -64,9 +64,9 @@ router.put('/:id/read', auth, (req, res) => {
   }
 });
 
-router.put('/read-all', auth, (req, res) => {
+router.put('/read-all', auth, async (req, res) => {
   try {
-    notificationRepo.markAllAsRead(req.user.id);
+    await notificationRepo.markAllAsRead(req.user.id);
     res.json({ success: true, message: 'All notifications marked as read' });
   } catch (err) {
     console.error('Mark all as read error:', err);
@@ -74,26 +74,20 @@ router.put('/read-all', auth, (req, res) => {
   }
 });
 
-router.post('/send', adminAuth, sendRules, handleErrors, (req, res) => {
+router.post('/send', adminAuth, sendRules, handleErrors, async (req, res) => {
   try {
     const { user_id, type, title, message, is_global } = req.body;
-
     const sanitizedTitle = sanitize(title);
     const sanitizedMessage = sanitizeMultiline(message);
 
     let notification;
     if (is_global) {
-      notification = notificationService.sendGlobalNotification(
-        type || 'community_news',
-        sanitizedTitle,
-        sanitizedMessage
+      notification = await notificationService.sendGlobalNotification(
+        type || 'community_news', sanitizedTitle, sanitizedMessage
       );
     } else if (user_id) {
-      notification = notificationService.createNotification(
-        user_id,
-        type || 'general',
-        sanitizedTitle,
-        sanitizedMessage
+      notification = await notificationService.createNotification(
+        user_id, type || 'general', sanitizedTitle, sanitizedMessage
       );
     } else {
       return res.status(400).json({
@@ -102,11 +96,7 @@ router.post('/send', adminAuth, sendRules, handleErrors, (req, res) => {
       });
     }
 
-    res.status(201).json({
-      success: true,
-      data: notification,
-      message: 'Notification sent successfully',
-    });
+    res.status(201).json({ success: true, data: notification, message: 'Notification sent successfully' });
   } catch (err) {
     console.error('Send notification error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });

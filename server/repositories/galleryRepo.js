@@ -1,3 +1,4 @@
+const { getFirestore, snapshotToArray } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class GalleryRepository extends BaseRepository {
@@ -5,9 +6,12 @@ class GalleryRepository extends BaseRepository {
     super('gallery');
   }
 
-  findAllOrdered() {
-    const db = require('../db/init').getDb();
-    return db.prepare('SELECT * FROM gallery ORDER BY created_at DESC').all();
+  async findAllOrdered() {
+    const db = getFirestore();
+    const snapshot = await db.collection('gallery')
+      .orderBy('created_at', 'desc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 }
 

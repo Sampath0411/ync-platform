@@ -7,6 +7,7 @@ import {
   HiCamera,
   HiCheck,
 } from 'react-icons/hi';
+import { FaGoogle } from 'react-icons/fa';
 import { useAuth } from '@/contexts/AuthContext';
 import PageTransition from '@/components/ui/PageTransition';
 import AnimatedBackground from '@/components/ui/AnimatedBackground';
@@ -77,8 +78,9 @@ export default function RegisterPage() {
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const fileInputRef = useRef(null);
-  const { register } = useAuth();
+  const { register, firebaseLogin } = useAuth();
   const navigate = useNavigate();
 
   const handleChange = (field) => (e) => {
@@ -179,6 +181,19 @@ export default function RegisterPage() {
       setApiError(err.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleSignUp = async () => {
+    setApiError(null);
+    setGoogleLoading(true);
+    try {
+      await firebaseLogin();
+      navigate('/dashboard', { replace: true });
+    } catch (err) {
+      setApiError(err.message || 'Google sign-up failed');
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -578,6 +593,32 @@ export default function RegisterPage() {
                 )}
               </div>
             </form>
+
+            {/* Google Sign-Up */}
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-white/10" />
+              </div>
+              <div className="relative flex justify-center text-xs">
+                <span className="bg-black/60 backdrop-blur-sm px-3 text-gray-500">
+                  or
+                </span>
+              </div>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              fullWidth
+              loading={googleLoading}
+              onClick={handleGoogleSignUp}
+            >
+              <span className="flex items-center justify-center gap-3">
+                <FaGoogle className="w-4 h-4" />
+                {googleLoading ? 'Signing in...' : 'Sign up with Google'}
+              </span>
+            </Button>
 
             {/* Sign in link */}
             <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-6">

@@ -1,46 +1,60 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET /api/favorites — list user's favorite events
-router.get('/', auth, (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const favorites = db.prepare(`
-      SELECT f.id as fav_id, f.created_at as favorited_at, e.*
-      FROM favorites f
-      JOIN events e ON f.event_id = e.id
-      WHERE f.user_id = ?
-      ORDER BY f.created_at DESC
-    `).all(req.user.id);
-    res.json({ success: true, data: favorites });
+    const db = getFirestore();
+    const snapshot = await db.collection('favorites')
+      .where('user_id', '==', req.user.id)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const favorites = snapshotToArray(snapshot);
+
+    // Enrich with event data
+    const enriched = await Promise.all(favorites.map(async (fav) => {
+      const event = await getDoc('events', fav.event_id);
+      return event ? { fav_id: fav.id, favorited_at: fav.created_at, ...event } : null;
+    }));
+
+    res.json({ success: true, data: enriched.filter(Boolean) });
   } catch (err) {
     console.error('Get favorites error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// POST /api/favorites/:eventId — add to favorites
-router.post('/:eventId', auth, (req, res) => {
+router.post('/:eventId', auth, async (req, res) => {
   try {
     const { eventId } = req.params;
-    const db = getDb();
+    const db = getFirestore();
 
-    const event = db.prepare('SELECT id FROM events WHERE id = ?').get(eventId);
+    const event = await getDoc('events', eventId);
     if (!event) {
       return res.status(404).json({ success: false, message: 'Event not found' });
     }
 
-    const existing = db.prepare('SELECT id FROM favorites WHERE user_id = ? AND event_id = ?').get(req.user.id, eventId);
-    if (existing) {
+    const existingSnap = await db.collection('favorites')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', eventId)
+      .limit(1)
+      .get();
+
+    if (!existingSnap.empty) {
       return res.json({ success: true, message: 'Already in favorites' });
     }
 
     const id = uuidv4();
-    db.prepare('INSERT INTO favorites (id, user_id, event_id) VALUES (?, ?, ?)').run(id, req.user.id, eventId);
+    await db.collection('favorites').doc(id).set({
+      id,
+      user_id: req.user.id,
+      event_id: eventId,
+      created_at: new Date().toISOString(),
+    });
 
     res.status(201).json({ success: true, data: { id, event_id: eventId }, message: 'Added to favorites' });
   } catch (err) {
@@ -49,17 +63,22 @@ router.post('/:eventId', auth, (req, res) => {
   }
 });
 
-// DELETE /api/favorites/:eventId — remove from favorites
-router.delete('/:eventId', auth, (req, res) => {
+router.delete('/:eventId', auth, async (req, res) => {
   try {
     const { eventId } = req.params;
-    const db = getDb();
+    const db = getFirestore();
 
-    const result = db.prepare('DELETE FROM favorites WHERE user_id = ? AND event_id = ?').run(req.user.id, eventId);
-    if (result.changes === 0) {
+    const existingSnap = await db.collection('favorites')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', eventId)
+      .limit(1)
+      .get();
+
+    if (existingSnap.empty) {
       return res.status(404).json({ success: false, message: 'Favorite not found' });
     }
 
+    await db.collection('favorites').doc(existingSnap.docs[0].id).delete();
     res.json({ success: true, message: 'Removed from favorites' });
   } catch (err) {
     console.error('Remove favorite error:', err);
@@ -67,13 +86,18 @@ router.delete('/:eventId', auth, (req, res) => {
   }
 });
 
-// GET /api/favorites/check/:eventId — check if event is favorited
-router.get('/check/:eventId', auth, (req, res) => {
+router.get('/check/:eventId', auth, async (req, res) => {
   try {
     const { eventId } = req.params;
-    const db = getDb();
-    const existing = db.prepare('SELECT id FROM favorites WHERE user_id = ? AND event_id = ?').get(req.user.id, eventId);
-    res.json({ success: true, data: { is_favorited: !!existing } });
+    const db = getFirestore();
+
+    const existingSnap = await db.collection('favorites')
+      .where('user_id', '==', req.user.id)
+      .where('event_id', '==', eventId)
+      .limit(1)
+      .get();
+
+    res.json({ success: true, data: { is_favorited: !existingSnap.empty } });
   } catch (err) {
     console.error('Check favorite error:', err);
     res.status(500).json({ success: false, message: 'Internal server error' });

@@ -8,13 +8,14 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const { Server } = require('socket.io');
-const { getDb } = require('./db/init');
+const { getFirestore, getDoc } = require('./db/firebase');
 const config = require('./config/default');
 const errorHandler = require('./middleware/errorHandler');
 const { checkExpiredMemberships } = require('./services/membershipExpiry');
 
-// Initialize database
-getDb();
+// Initialize Firebase
+console.log('Initializing Firebase...');
+const db = getFirestore();
 
 // Check for expired memberships on startup and every hour
 checkExpiredMemberships();
@@ -57,18 +58,18 @@ const app = express();
 
 // Security middleware
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow uploads to be served cross-origin
-  contentSecurityPolicy: false, // Disable CSP for API server — handled by frontend if needed
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: false,
 }));
 
-// CORS — restrict in production
+// CORS
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// General rate limit: 200 requests per minute per IP
+// Rate limiting
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 200,
@@ -78,7 +79,6 @@ const generalLimiter = rateLimit({
 });
 app.use('/api', generalLimiter);
 
-// Strict rate limit for auth endpoints (brute force prevention)
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
@@ -90,7 +90,6 @@ app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/admin/auth/login', authLimiter);
 
-// Contact form rate limit (spam prevention)
 const contactLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 3,
@@ -174,7 +173,6 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.userId}`);
 
-  // Join personal room for targeted notifications
   socket.join(`user:${socket.userId}`);
 
   if (socket.isAdmin) {
@@ -189,22 +187,23 @@ io.on('connection', (socket) => {
 // Make io accessible to routes
 app.set('io', io);
 
-// Short URL redirect
-app.get('/s/:code', (req, res) => {
+// Short URL redirect — using Firestore
+app.get('/s/:code', async (req, res) => {
   try {
-    const db = getDb();
-    const url = db.prepare('SELECT * FROM short_urls WHERE code = ?').get(req.params.code);
+    const url = await getDoc('short_urls', req.params.code);
     if (!url) {
       return res.status(404).send('Link not found');
     }
 
-    // Check expiry
     if (url.expires_at && new Date(url.expires_at) < new Date()) {
       return res.status(410).send('This link has expired');
     }
 
     // Increment click count
-    db.prepare('UPDATE short_urls SET click_count = click_count + 1 WHERE code = ?').run(req.params.code);
+    const db = getFirestore();
+    await db.collection('short_urls').doc(req.params.code).update({
+      click_count: (url.click_count || 0) + 1,
+    });
 
     res.redirect(301, url.target_url);
   } catch (err) {
@@ -220,7 +219,6 @@ if (process.env.NODE_ENV === 'production') {
     console.log(`[production] Serving static files from ${clientDist}`);
     app.use(express.static(clientDist));
 
-    // SPA fallback — any non-API, non-file request serves index.html
     app.get(/^(?!\/api\/|\/uploads\/|\/s\/).*/, (req, res) => {
       res.sendFile(path.join(clientDist, 'index.html'));
     });

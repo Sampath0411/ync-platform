@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { HiArrowRight, HiShieldCheck } from 'react-icons/hi';
+import { FaGoogle } from 'react-icons/fa';
 import { useAuth } from '@/contexts/AuthContext';
 import PageTransition from '@/components/ui/PageTransition';
 import AnimatedBackground from '@/components/ui/AnimatedBackground';
@@ -15,7 +16,8 @@ export default function LoginPage() {
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState(null);
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const { login, firebaseLogin } = useAuth();
   const navigate = useNavigate();
 
   const validate = () => {
@@ -40,6 +42,19 @@ export default function LoginPage() {
       setApiError(err.message || 'Login failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setApiError(null);
+    setGoogleLoading(true);
+    try {
+      await firebaseLogin();
+      navigate('/dashboard', { replace: true });
+    } catch (err) {
+      setApiError(err.message || 'Google sign-in failed');
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -147,6 +162,21 @@ export default function LoginPage() {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>
+
+            {/* Google Sign-In */}
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              fullWidth
+              loading={googleLoading}
+              onClick={handleGoogleSignIn}
+            >
+              <span className="flex items-center justify-center gap-3">
+                <FaGoogle className="w-4 h-4" />
+                {googleLoading ? 'Signing in...' : 'Sign in with Google'}
+              </span>
+            </Button>
 
             {/* Divider */}
             <div className="relative my-6">

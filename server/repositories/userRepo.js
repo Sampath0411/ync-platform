@@ -1,4 +1,4 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class UserRepository extends BaseRepository {
@@ -6,50 +6,68 @@ class UserRepository extends BaseRepository {
     super('users');
   }
 
-  findByEmail(email) {
-    const db = getDb();
-    return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  async findByEmail(email) {
+    const db = getFirestore();
+    const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (snapshot.empty) return null;
+    const doc = snapshot.docs[0];
+    return { id: doc.id, ...doc.data() };
   }
 
-  findByMembershipStatus(status) {
-    const db = getDb();
-    return db.prepare('SELECT * FROM users WHERE membership_status = ? ORDER BY created_at DESC').all(status);
+  async findByMembershipStatus(status) {
+    const db = getFirestore();
+    const snapshot = await db.collection('users')
+      .where('membership_status', '==', status)
+      .orderBy('created_at', 'desc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 
-  getStats() {
-    const db = getDb();
-    const total = db.prepare('SELECT COUNT(*) as count FROM users').get();
-    const active = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').get();
-    const activeMembers = db.prepare("SELECT COUNT(*) as count FROM users WHERE membership_status IN ('trial', 'active')").get();
-    const newToday = db.prepare("SELECT COUNT(*) as count FROM users WHERE date(created_at) = date('now')").get();
-    return {
-      total: total.count,
-      active: active.count,
-      activeMembers: activeMembers.count,
-      newToday: newToday.count,
-    };
+  async getStats() {
+    const db = getFirestore();
+    const allUsers = await db.collection('users').get();
+    const total = allUsers.size;
+    const today = new Date().toISOString().split('T')[0];
+    let active = 0, activeMembers = 0, newToday = 0;
+
+    allUsers.forEach(doc => {
+      const u = doc.data();
+      if (u.is_active) active++;
+      if (u.membership_status === 'trial' || u.membership_status === 'active') activeMembers++;
+      if (u.created_at && u.created_at.startsWith(today)) newToday++;
+    });
+
+    return { total, active, activeMembers, newToday };
   }
 
-  searchUsers(query, page = 1, limit = 20) {
-    const db = getDb();
-    const search = `%${query}%`;
+  async searchUsers(query, page = 1, limit = 20) {
+    const db = getFirestore();
+    page = Math.max(1, parseInt(page, 10));
+    limit = Math.max(1, parseInt(limit, 10));
+    const q = query.toLowerCase();
+
+    const snapshot = await db.collection('users').orderBy('created_at', 'desc').get();
+    const filtered = [];
+
+    snapshot.forEach(doc => {
+      const u = { id: doc.id, ...doc.data() };
+      if ((u.name && u.name.toLowerCase().includes(q)) ||
+          (u.email && u.email.toLowerCase().includes(q)) ||
+          (u.mobile && u.mobile.includes(query)) ||
+          (u.city && u.city.toLowerCase().includes(q))) {
+        filtered.push(u);
+      }
+    });
+
+    const total = filtered.length;
     const offset = (page - 1) * limit;
-    const countRow = db
-      .prepare("SELECT COUNT(*) as total FROM users WHERE name LIKE ? OR email LIKE ? OR mobile LIKE ? OR city LIKE ?")
-      .get(search, search, search, search);
-    const total = countRow ? countRow.total : 0;
-    const rows = db
-      .prepare("SELECT id, name, email, mobile, city, role, is_active, membership_status, created_at FROM users WHERE name LIKE ? OR email LIKE ? OR mobile LIKE ? OR city LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
-      .all(search, search, search, search, limit, offset);
-    return {
-      data: rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    const data = filtered.slice(offset, offset + limit).map(u => ({
+      id: u.id, name: u.name, email: u.email, mobile: u.mobile,
+      city: u.city, role: u.role, is_active: u.is_active,
+      membership_status: u.membership_status, created_at: u.created_at,
+    }));
+
+    return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 }
 

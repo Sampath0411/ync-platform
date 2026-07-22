@@ -1,7 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { body, validationResult } = require('express-validator');
-const { getDb } = require('../db/init');
+const { getFirestore, getDoc, snapshotToArray } = require('../db/firebase');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -14,7 +14,6 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// Generate a random short code
 function generateCode(length = 8) {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
@@ -24,32 +23,36 @@ function generateCode(length = 8) {
   return code;
 }
 
-// POST /api/short-urls — create a short URL
 router.post('/', auth, [
   body('target_url').isURL().withMessage('Valid target URL is required'),
   body('type').optional().isIn(['ticket', 'event', 'other']).withMessage('Invalid type'),
   body('reference_id').optional().isString(),
-], handleErrors, (req, res) => {
+], handleErrors, async (req, res) => {
   try {
     const { target_url, type = 'other', reference_id } = req.body;
-    const db = getDb();
+    const db = getFirestore();
 
-    // Generate unique code
     let code;
     let attempts = 0;
     do {
       code = generateCode(8);
       attempts++;
-    } while (db.prepare('SELECT code FROM short_urls WHERE code = ?').get(code) && attempts < 5);
+      const existing = await getDoc('short_urls', code);
+      if (!existing) break;
+    } while (attempts < 5);
 
     if (attempts >= 5) {
       return res.status(500).json({ success: false, message: 'Failed to generate unique code' });
     }
 
-    const id = uuidv4();
-    db.prepare(
-      'INSERT INTO short_urls (code, target_url, type, reference_id) VALUES (?, ?, ?, ?)'
-    ).run(code, target_url, type, reference_id || null);
+    await db.collection('short_urls').doc(code).set({
+      code,
+      target_url,
+      type,
+      reference_id: reference_id || null,
+      click_count: 0,
+      created_at: new Date().toISOString(),
+    });
 
     const shortUrl = `${req.protocol}://${req.get('host')}/s/${code}`;
     res.status(201).json({ success: true, data: { code, short_url: shortUrl, target_url } });
@@ -59,13 +62,11 @@ router.post('/', auth, [
   }
 });
 
-// GET /api/short-urls/my — list user's short URLs
-router.get('/my', auth, (req, res) => {
+router.get('/my', auth, async (req, res) => {
   try {
-    const db = getDb();
-    const urls = db.prepare(
-      'SELECT * FROM short_urls WHERE reference_id IN (SELECT id FROM tickets WHERE user_id = ?) OR reference_id IN (SELECT id FROM events) ORDER BY created_at DESC'
-    ).all(req.user.id);
+    const db = getFirestore();
+    const snap = await db.collection('short_urls').orderBy('created_at', 'desc').get();
+    const urls = snapshotToArray(snap);
     res.json({ success: true, data: urls });
   } catch (err) {
     console.error('Get short URLs error:', err);

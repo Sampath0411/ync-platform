@@ -9,9 +9,9 @@ const config = require('../config/default');
 
 const router = express.Router();
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const items = galleryRepo.findAllOrdered();
+    const items = await galleryRepo.findAllOrdered();
     res.json({ success: true, data: items });
   } catch (err) {
     console.error('List gallery error:', err);
@@ -19,7 +19,7 @@ router.get('/', (req, res) => {
   }
 });
 
-router.post('/', adminAuth, upload.single('image'), (req, res) => {
+router.post('/', adminAuth, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'Image file is required' });
@@ -38,9 +38,10 @@ router.post('/', adminAuth, upload.single('image'), (req, res) => {
       title: title || null,
       description: description || null,
       uploaded_by: req.admin.id,
+      created_at: new Date().toISOString(),
     };
 
-    const item = galleryRepo.create(galleryData);
+    const item = await galleryRepo.create(galleryData);
     res.status(201).json({
       success: true,
       data: item,
@@ -52,14 +53,13 @@ router.post('/', adminAuth, upload.single('image'), (req, res) => {
   }
 });
 
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = galleryRepo.findById(req.params.id);
+    const existing = await galleryRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Gallery item not found' });
     }
 
-    // Remove file from disk
     if (existing.url) {
       const filename = path.basename(existing.url);
       const filePath = path.join(config.UPLOAD_DIR, filename);
@@ -68,7 +68,7 @@ router.delete('/:id', adminAuth, (req, res) => {
       }
     }
 
-    galleryRepo.delete(req.params.id);
+    await galleryRepo.delete(req.params.id);
     res.json({ success: true, message: 'Gallery item deleted successfully' });
   } catch (err) {
     console.error('Delete gallery error:', err);

@@ -1,4 +1,4 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class EventRepository extends BaseRepository {
@@ -6,55 +6,82 @@ class EventRepository extends BaseRepository {
     super('events');
   }
 
-  findByStatus(status) {
-    const db = getDb();
-    return db.prepare('SELECT * FROM events WHERE status = ? ORDER BY event_date DESC').all(status);
+  async findByStatus(status) {
+    const db = getFirestore();
+    const snapshot = await db.collection('events')
+      .where('status', '==', status)
+      .orderBy('event_date', 'desc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 
-  findUpcoming() {
-    const db = getDb();
-    return db
-      .prepare(
-        "SELECT * FROM events WHERE status IN ('upcoming', 'live') AND event_date >= date('now') ORDER BY event_date ASC"
-      )
-      .all();
+  async findUpcoming() {
+    const db = getFirestore();
+    const today = new Date().toISOString().split('T')[0];
+
+    // Firestore can't do OR queries — fetch both statuses and combine
+    const snap1 = await db.collection('events')
+      .where('status', '==', 'upcoming')
+      .orderBy('event_date', 'asc')
+      .get();
+
+    const snap2 = await db.collection('events')
+      .where('status', '==', 'ongoing')
+      .orderBy('event_date', 'asc')
+      .get();
+
+    const results = snapshotToArray(snap1).concat(snapshotToArray(snap2));
+    return results
+      .filter(e => e.event_date >= today)
+      .sort((a, b) => (a.event_date || '').localeCompare(b.event_date || ''));
   }
 
-  findByCategory(category) {
-    const db = getDb();
-    return db.prepare('SELECT * FROM events WHERE category = ? ORDER BY event_date DESC').all(category);
+  async findByCategory(category) {
+    const db = getFirestore();
+    const snapshot = await db.collection('events')
+      .where('category', '==', category)
+      .orderBy('event_date', 'desc')
+      .get();
+    return snapshotToArray(snapshot);
   }
 
-  searchEvents(query, page = 1, limit = 20) {
-    const db = getDb();
-    const search = `%${query}%`;
+  async searchEvents(query, page = 1, limit = 20) {
+    const db = getFirestore();
+    page = Math.max(1, parseInt(page, 10));
+    limit = Math.max(1, parseInt(limit, 10));
+    const q = query.toLowerCase();
+
+    const snapshot = await db.collection('events').orderBy('event_date', 'desc').get();
+    const filtered = [];
+
+    snapshot.forEach(doc => {
+      const e = { id: doc.id, ...doc.data() };
+      if ((e.name && e.name.toLowerCase().includes(q)) ||
+          (e.description && e.description.toLowerCase().includes(q)) ||
+          (e.venue && e.venue.toLowerCase().includes(q)) ||
+          (e.organizer_name && e.organizer_name.toLowerCase().includes(q))) {
+        filtered.push(e);
+      }
+    });
+
+    const total = filtered.length;
     const offset = (page - 1) * limit;
-    const countRow = db
-      .prepare('SELECT COUNT(*) as total FROM events WHERE name LIKE ? OR description LIKE ? OR venue LIKE ? OR organizer_name LIKE ?')
-      .get(search, search, search, search);
-    const total = countRow ? countRow.total : 0;
-    const rows = db
-      .prepare("SELECT * FROM events WHERE name LIKE ? OR description LIKE ? OR venue LIKE ? OR organizer_name LIKE ? ORDER BY event_date DESC LIMIT ? OFFSET ?")
-      .all(search, search, search, search, limit, offset);
-    return {
-      data: rows,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    const data = filtered.slice(offset, offset + limit);
+
+    return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
-  updateAvailableSeats(eventId, delta) {
-    const db = getDb();
-    const sign = delta >= 0 ? '+' : '-';
-    db.prepare(`UPDATE events SET available_seats = available_seats ${sign} ?, updated_at = datetime('now') WHERE id = ?`).run(
-      Math.abs(delta),
-      eventId
-    );
-    return this.findById(eventId);
+  async updateAvailableSeats(eventId, delta) {
+    const event = await this.findById(eventId);
+    if (!event) throw new Error('Event not found');
+
+    const currentSeats = event.available_seats || 0;
+    const newSeats = Math.max(0, currentSeats + delta);
+
+    return this.update(eventId, {
+      available_seats: newSeats,
+      updated_at: new Date().toISOString(),
+    });
   }
 }
 

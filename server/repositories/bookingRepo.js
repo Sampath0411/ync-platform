@@ -1,4 +1,4 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class BookingRepository extends BaseRepository {
@@ -6,42 +6,70 @@ class BookingRepository extends BaseRepository {
     super('bookings');
   }
 
-  findByUser(userId) {
-    const db = getDb();
-    return db
-      .prepare(
-        `SELECT b.*, e.name as event_name, e.event_date, e.start_time, e.end_time, e.venue, e.cover_image
-         FROM bookings b
-         JOIN events e ON b.event_id = e.id
-         WHERE b.user_id = ?
-         ORDER BY b.created_at DESC`
-      )
-      .all(userId);
+  async findByUser(userId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('bookings')
+      .where('user_id', '==', userId)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const bookings = snapshotToArray(snapshot);
+
+    // Enrich with event data
+    const enriched = await Promise.all(bookings.map(async (b) => {
+      const event = await getDoc('events', b.event_id);
+      return {
+        ...b,
+        event_name: event?.name || null,
+        event_date: event?.event_date || null,
+        start_time: event?.start_time || null,
+        end_time: event?.end_time || null,
+        venue: event?.venue || null,
+        cover_image: event?.cover_image || null,
+      };
+    }));
+
+    return enriched;
   }
 
-  findByEvent(eventId) {
-    const db = getDb();
-    return db
-      .prepare(
-        `SELECT b.*, u.name as user_name, u.email as user_email
-         FROM bookings b
-         JOIN users u ON b.user_id = u.id
-         WHERE b.event_id = ?
-         ORDER BY b.created_at DESC`
-      )
-      .all(eventId);
+  async findByEvent(eventId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('bookings')
+      .where('event_id', '==', eventId)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const bookings = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(bookings.map(async (b) => {
+      const user = await getDoc('users', b.user_id);
+      return {
+        ...b,
+        user_name: user?.name || null,
+        user_email: user?.email || null,
+      };
+    }));
+
+    return enriched;
   }
 
-  getSalesStats(eventId) {
-    const db = getDb();
-    const stats = db
-      .prepare(
-        `SELECT COUNT(*) as total_bookings, COALESCE(SUM(quantity), 0) as total_tickets, COALESCE(SUM(total_amount), 0) as total_revenue
-         FROM bookings
-         WHERE event_id = ? AND status = 'confirmed'`
-      )
-      .get(eventId);
-    return stats || { total_bookings: 0, total_tickets: 0, total_revenue: 0 };
+  async getSalesStats(eventId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('bookings')
+      .where('event_id', '==', eventId)
+      .where('status', '==', 'confirmed')
+      .get();
+
+    let total_bookings = 0, total_tickets = 0, total_revenue = 0;
+
+    snapshot.forEach(doc => {
+      const b = doc.data();
+      total_bookings++;
+      total_tickets += (b.quantity || 0);
+      total_revenue += (b.total_amount || 0);
+    });
+
+    return { total_bookings, total_tickets, total_revenue };
   }
 }
 

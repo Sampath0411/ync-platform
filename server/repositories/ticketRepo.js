@@ -1,4 +1,4 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 const BaseRepository = require('./base');
 
 class TicketRepository extends BaseRepository {
@@ -6,52 +6,84 @@ class TicketRepository extends BaseRepository {
     super('tickets');
   }
 
-  findByUser(userId) {
-    const db = getDb();
-    return db
-      .prepare(
-        `SELECT t.*, e.name as event_name, e.event_date, e.start_time, e.end_time, e.venue, e.cover_image
-         FROM tickets t
-         JOIN events e ON t.event_id = e.id
-         WHERE t.user_id = ?
-         ORDER BY t.created_at DESC`
-      )
-      .all(userId);
+  async findByUser(userId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('tickets')
+      .where('user_id', '==', userId)
+      .orderBy('created_at', 'desc')
+      .get();
+
+    const tickets = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(tickets.map(async (t) => {
+      const event = await getDoc('events', t.event_id);
+      return {
+        ...t,
+        event_name: event?.name || null,
+        event_date: event?.event_date || null,
+        start_time: event?.start_time || null,
+        end_time: event?.end_time || null,
+        venue: event?.venue || null,
+        cover_image: event?.cover_image || null,
+      };
+    }));
+
+    return enriched;
   }
 
-  findByEvent(eventId) {
-    const db = getDb();
-    return db
-      .prepare(
-        `SELECT t.*, u.name as user_name, u.email as user_email
-         FROM tickets t
-         JOIN users u ON t.user_id = u.id
-         WHERE t.event_id = ?`
-      )
-      .all(eventId);
+  async findByEvent(eventId) {
+    const db = getFirestore();
+    const snapshot = await db.collection('tickets')
+      .where('event_id', '==', eventId)
+      .get();
+
+    const tickets = snapshotToArray(snapshot);
+
+    const enriched = await Promise.all(tickets.map(async (t) => {
+      const user = await getDoc('users', t.user_id);
+      return {
+        ...t,
+        user_name: user?.name || null,
+        user_email: user?.email || null,
+      };
+    }));
+
+    return enriched;
   }
 
-  findByTicketNumber(ticketNumber) {
-    const db = getDb();
-    return db
-      .prepare(
-        `SELECT t.*, e.name as event_name, e.event_date, e.venue, u.name as user_name
-         FROM tickets t
-         JOIN events e ON t.event_id = e.id
-         JOIN users u ON t.user_id = u.id
-         WHERE t.ticket_number = ?`
-      )
-      .get(ticketNumber);
+  async findByTicketNumber(ticketNumber) {
+    const db = getFirestore();
+    const snapshot = await db.collection('tickets')
+      .where('ticket_number', '==', ticketNumber)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) return null;
+    const t = snapshot.docs[0];
+    const ticket = { id: t.id, ...t.data() };
+
+    const [event, user] = await Promise.all([
+      getDoc('events', ticket.event_id),
+      getDoc('users', ticket.user_id),
+    ]);
+
+    return {
+      ...ticket,
+      event_name: event?.name || null,
+      event_date: event?.event_date || null,
+      venue: event?.venue || null,
+      user_name: user?.name || null,
+    };
   }
 
-  updateStatus(id, status) {
-    const db = getDb();
+  async updateStatus(id, status) {
+    const updates = { status };
     if (status === 'used') {
-      db.prepare("UPDATE tickets SET status = ?, validated_at = datetime('now') WHERE id = ?").run(status, id);
+      updates.validated_at = new Date().toISOString();
     } else {
-      db.prepare('UPDATE tickets SET status = ?, validated_at = NULL WHERE id = ?').run(status, id);
+      updates.validated_at = null;
     }
-    return this.findById(id);
+    return this.update(id, updates);
   }
 }
 

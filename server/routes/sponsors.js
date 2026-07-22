@@ -25,10 +25,9 @@ function handleErrors(req, res, next) {
   next();
 }
 
-// Public: Get all active sponsors
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const sponsors = sponsorRepo.findActive();
+    const sponsors = await sponsorRepo.findActive();
     res.json({ success: true, data: sponsors });
   } catch (err) {
     console.error('List sponsors error:', err);
@@ -36,10 +35,9 @@ router.get('/', (req, res) => {
   }
 });
 
-// Admin: Get all sponsors (including inactive)
-router.get('/all', adminAuth, (req, res) => {
+router.get('/all', adminAuth, async (req, res) => {
   try {
-    const sponsors = sponsorRepo.findAll();
+    const sponsors = await sponsorRepo.findAll();
     res.json({ success: true, data: sponsors });
   } catch (err) {
     console.error('List all sponsors error:', err);
@@ -47,8 +45,7 @@ router.get('/all', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Create a new sponsor
-router.post('/', adminAuth, sponsorRules, handleErrors, (req, res) => {
+router.post('/', adminAuth, sponsorRules, handleErrors, async (req, res) => {
   try {
     const { name, logo_url, website_url, sort_order, is_active } = req.body;
 
@@ -60,9 +57,10 @@ router.post('/', adminAuth, sponsorRules, handleErrors, (req, res) => {
       website_url: website_url || null,
       sort_order: sort_order !== undefined ? sort_order : 0,
       is_active: is_active !== undefined ? (is_active ? 1 : 0) : 1,
+      created_at: new Date().toISOString(),
     };
 
-    const sponsor = sponsorRepo.create(sponsorData);
+    const sponsor = await sponsorRepo.create(sponsorData);
     res.status(201).json({
       success: true,
       data: sponsor,
@@ -74,10 +72,9 @@ router.post('/', adminAuth, sponsorRules, handleErrors, (req, res) => {
   }
 });
 
-// Admin: Update a sponsor
-router.put('/:id', adminAuth, (req, res) => {
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = sponsorRepo.findById(req.params.id);
+    const existing = await sponsorRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Sponsor not found' });
     }
@@ -88,15 +85,12 @@ router.put('/:id', adminAuth, (req, res) => {
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         if (field === 'name') updates[field] = sanitize(req.body[field]);
-        else if (field === 'is_active') {
-          updates[field] = req.body[field] ? 1 : 0;
-        } else {
-          updates[field] = req.body[field];
-        }
+        else if (field === 'is_active') updates[field] = req.body[field] ? 1 : 0;
+        else updates[field] = req.body[field];
       }
     }
 
-    const sponsor = sponsorRepo.update(req.params.id, updates);
+    const sponsor = await sponsorRepo.update(req.params.id, updates);
     res.json({
       success: true,
       data: sponsor,
@@ -108,15 +102,14 @@ router.put('/:id', adminAuth, (req, res) => {
   }
 });
 
-// Admin: Delete a sponsor
-router.delete('/:id', adminAuth, (req, res) => {
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const existing = sponsorRepo.findById(req.params.id);
+    const existing = await sponsorRepo.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Sponsor not found' });
     }
 
-    sponsorRepo.delete(req.params.id);
+    await sponsorRepo.delete(req.params.id);
     res.json({ success: true, message: 'Sponsor deleted successfully' });
   } catch (err) {
     console.error('Delete sponsor error:', err);

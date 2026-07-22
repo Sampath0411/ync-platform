@@ -1,66 +1,83 @@
-const { getDb } = require('../db/init');
+const { getFirestore, snapshotToArray, getDoc } = require('../db/firebase');
 
 class BaseRepository {
-  constructor(tableName) {
-    this.tableName = tableName;
+  constructor(collectionName) {
+    this.collectionName = collectionName;
   }
 
-  findAll() {
-    const db = getDb();
-    return db.prepare(`SELECT * FROM ${this.tableName}`).all();
+  async findAll() {
+    const db = getFirestore();
+    const snapshot = await db.collection(this.collectionName).get();
+    return snapshotToArray(snapshot);
   }
 
-  findById(id) {
-    const db = getDb();
-    return db.prepare(`SELECT * FROM ${this.tableName} WHERE id = ?`).get(id);
+  async findById(id) {
+    return getDoc(this.collectionName, id);
   }
 
-  create(data) {
-    const db = getDb();
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const placeholders = keys.map(() => '?').join(', ');
-    const columns = keys.join(', ');
-    const stmt = db.prepare(`INSERT INTO ${this.tableName} (${columns}) VALUES (${placeholders})`);
-    stmt.run(...values);
-    return this.findById(data.id);
-  }
-
-  update(id, data) {
-    const db = getDb();
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const setClause = keys.map((k) => `${k} = ?`).join(', ');
-    const stmt = db.prepare(`UPDATE ${this.tableName} SET ${setClause} WHERE id = ?`);
-    stmt.run(...values, id);
+  async create(data) {
+    const db = getFirestore();
+    const id = data.id;
+    await db.collection(this.collectionName).doc(id).set(data);
     return this.findById(id);
   }
 
-  delete(id) {
-    const db = getDb();
-    const stmt = db.prepare(`DELETE FROM ${this.tableName} WHERE id = ?`);
-    return stmt.run(id);
+  async update(id, data) {
+    const db = getFirestore();
+    await db.collection(this.collectionName).doc(id).update(data);
+    return this.findById(id);
   }
 
-  findWhere(conditions) {
-    const db = getDb();
-    const keys = Object.keys(conditions);
-    const values = Object.values(conditions);
-    const whereClause = keys.map((k) => `${k} = ?`).join(' AND ');
-    return db.prepare(`SELECT * FROM ${this.tableName} WHERE ${whereClause}`).all(...values);
+  async delete(id) {
+    const db = getFirestore();
+    await db.collection(this.collectionName).doc(id).delete();
+    return true;
   }
 
-  paginate(page = 1, limit = 20, whereClause = '', params = []) {
-    const db = getDb();
+  async findWhere(conditions) {
+    const db = getFirestore();
+    let query = db.collection(this.collectionName);
+    for (const [key, value] of Object.entries(conditions)) {
+      query = query.where(key, '==', value);
+    }
+    const snapshot = await query.get();
+    return snapshotToArray(snapshot);
+  }
+
+  async count(conditions = {}) {
+    const db = getFirestore();
+    let query = db.collection(this.collectionName);
+    for (const [key, value] of Object.entries(conditions)) {
+      query = query.where(key, '==', value);
+    }
+    const snapshot = await query.get();
+    return snapshot.size;
+  }
+
+  async paginate({ page = 1, limit = 20, conditions = {}, orderBy = 'created_at', orderDir = 'desc' } = {}) {
+    const db = getFirestore();
+    page = Math.max(1, parseInt(page, 10));
+    limit = Math.max(1, Math.min(100, parseInt(limit, 10)));
+
+    let query = db.collection(this.collectionName);
+
+    for (const [key, value] of Object.entries(conditions)) {
+      if (value !== undefined && value !== null) {
+        query = query.where(key, '==', value);
+      }
+    }
+
+    query = query.orderBy(orderBy, orderDir);
+
+    const countSnapshot = await query.get();
+    const total = countSnapshot.size;
+
     const offset = (page - 1) * limit;
-    const where = whereClause ? `WHERE ${whereClause}` : '';
-    const countRow = db.prepare(`SELECT COUNT(*) as total FROM ${this.tableName} ${where}`).get(...params);
-    const total = countRow ? countRow.total : 0;
-    const rows = db
-      .prepare(`SELECT * FROM ${this.tableName} ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-      .all(...params, limit, offset);
+    const snapshot = await query.limit(limit).offset(offset).get();
+    const data = snapshotToArray(snapshot);
+
     return {
-      data: rows,
+      data,
       pagination: {
         page,
         limit,

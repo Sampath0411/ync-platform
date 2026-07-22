@@ -6,5 +6,4 @@ module.exports = {
   ADMIN_JWT_SECRET: process.env.ADMIN_JWT_SECRET || 'ync_admin_jwt_secret_key_2026',
   PORT: parseInt(process.env.PORT, 10) || 5000,
   UPLOAD_DIR: path.resolve(__dirname, '../../uploads'),
-  DB_PATH: path.resolve(__dirname, '../../data/ync.db'),
 };
