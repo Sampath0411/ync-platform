@@ -2,11 +2,17 @@ process.env.SERVERLESS = '1';
 process.env.VERCEL = '1';
 
 // Lazy-load the Express app so cold starts are fast.
-// The heavy modules (Firebase Admin SDK, etc.) are only loaded on the first request.
 let handler = null;
 
 module.exports = async function vercelHandler(req, res) {
   try {
+    // Health check — respond immediately without loading Express/Firebase
+    if (req.url === '/api/health' || req.url === '/api/health/') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: 'YNC API is running', timestamp: new Date().toISOString() }));
+      return;
+    }
+
     if (!handler) {
       const serverless = require('serverless-http');
       const app = require('../server/index');
@@ -15,7 +21,6 @@ module.exports = async function vercelHandler(req, res) {
     return await handler(req, res);
   } catch (err) {
     console.error('CRITICAL:', err.message);
-    console.error(err.stack);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
