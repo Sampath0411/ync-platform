@@ -1,9 +1,7 @@
-const { initializeApp, applicationDefault, cert } = require('firebase-admin/app');
-const { getFirestore: getFs } = require('firebase-admin/firestore');
-const { getAuth: getAuthModule } = require('firebase-admin/auth');
-const { getStorage: getStorageModule } = require('firebase-admin/storage');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+// Firebase Admin SDK is loaded lazily inside initFirebase() to reduce Vercel cold starts.
+// Loading it at module level adds ~3-5s to every cold start even for non-Firebase routes.
 
 let firestore = null;
 let authInstance = null;
@@ -37,10 +35,15 @@ function getBucket() {
 
 function initFirebase() {
   if (initialized) return;
-  // Mark as attempted so we don't retry on every request after a permanent failure
   initialized = true;
 
   try {
+    // Lazy-load Firebase Admin SDK — saves ~3-5s on Vercel cold starts for non-Firebase routes
+    const { initializeApp, applicationDefault, cert } = require('firebase-admin/app');
+    const { getFirestore: getFs } = require('firebase-admin/firestore');
+    const { getAuth: getAuthModule } = require('firebase-admin/auth');
+    const { getStorage: getStorageModule } = require('firebase-admin/storage');
+
     let appConfig;
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
       appConfig = {
