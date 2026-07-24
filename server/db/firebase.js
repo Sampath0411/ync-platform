@@ -37,6 +37,8 @@ function getBucket() {
 
 function initFirebase() {
   if (initialized) return;
+  // Mark as attempted so we don't retry on every request after a permanent failure
+  initialized = true;
 
   try {
     let appConfig;
@@ -73,11 +75,19 @@ function initFirebase() {
     authInstance = getAuthModule();
     storageInstance = getStorageModule();
     storageBucket = storageInstance.bucket();
-    initialized = true;
     console.log('Firebase initialized successfully');
   } catch (err) {
-    console.error('Firebase initialization error:', err.message);
-    throw err;
+    const errMsg = err.message;
+    console.error('Firebase initialization error:', errMsg);
+
+    function stubError() {
+      throw new Error(`Firebase not initialized: ${errMsg}`);
+    }
+    // Error stubs so callers get a clear message instead of crashing
+    firestore = { collection: stubError, batch: stubError };
+    authInstance = { verifyIdToken: stubError, getUser: stubError };
+    storageInstance = { bucket: stubError };
+    storageBucket = { file: stubError, name: 'unknown' };
   }
 }
 

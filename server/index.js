@@ -41,8 +41,14 @@ const cronRoutes = require('./routes/cron');
 
 const isServerless = process.env.VERCEL === '1' || process.env.SERVERLESS === '1';
 
-console.log('Initializing Firebase...');
-getFirestore();
+// Initialize Firebase — failure is non-fatal; routes will surface the error individually
+try {
+  console.log('Initializing Firebase...');
+  getFirestore();
+} catch (err) {
+  console.error('Firebase initialization FAILED:', err.message);
+  console.error('The server will start, but any route that needs Firebase will return an error.');
+}
 
 // Validate required environment variables at startup
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'ync_jwt_secret_key_2026') {
