@@ -4,6 +4,11 @@ const { checkExpiredMemberships } = require('../services/membershipExpiry');
 const router = express.Router();
 
 function verifyCron(req, res, next) {
+  // Vercel cron jobs include this header automatically — trust it
+  if (req.headers['x-vercel-cron']) {
+    return next();
+  }
+
   const expected = process.env.CRON_SECRET;
   if (!expected) {
     return res.status(500).json({ success: false, message: 'CRON_SECRET is not configured' });
