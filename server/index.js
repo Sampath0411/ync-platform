@@ -13,31 +13,17 @@ const config = require('./config/default');
 const errorHandler = require('./middleware/errorHandler');
 const { checkExpiredMemberships } = require('./services/membershipExpiry');
 
-// Import routes
-const authRoutes = require('./routes/auth');
-const adminAuthRoutes = require('./routes/adminAuth');
-const eventRoutes = require('./routes/events');
-const bookingRoutes = require('./routes/bookings');
-const ticketRoutes = require('./routes/tickets');
-const membershipRoutes = require('./routes/memberships');
-const notificationRoutes = require('./routes/notifications');
-const announcementRoutes = require('./routes/announcements');
-const galleryRoutes = require('./routes/gallery');
-const contactRoutes = require('./routes/contact');
-const adminRoutes = require('./routes/admin');
-const usersRoutes = require('./routes/users');
-const faqRoutes = require('./routes/faqs');
-const sponsorRoutes = require('./routes/sponsors');
-const testimonialRoutes = require('./routes/testimonials');
-const settingsRoutes = require('./routes/settings');
-const favoriteRoutes = require('./routes/favorites');
-const waitlistRoutes = require('./routes/waitlist');
-const reviewRoutes = require('./routes/reviews');
-const feedbackRoutes = require('./routes/feedback');
-const shortUrlRoutes = require('./routes/shortUrls');
-const pushRoutes = require('./routes/push');
-const analyticsRoutes = require('./routes/analytics');
-const cronRoutes = require('./routes/cron');
+// Lazy route loader — modules are require()d on first request, not at startup.
+// This keeps Vercel cold starts well under the 10s Hobby-plan timeout.
+function lazyRouter(modulePath) {
+  let router = null;
+  return (req, res, next) => {
+    if (!router) {
+      router = require(modulePath);
+    }
+    router(req, res, next);
+  };
+}
 
 const isServerless = process.env.VERCEL === '1' || process.env.SERVERLESS === '1';
 
@@ -113,31 +99,31 @@ if (!isServerless) {
   app.use('/uploads', express.static(config.UPLOAD_DIR));
 }
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/admin/auth', adminAuthRoutes);
-app.use('/api/events', eventRoutes);
-app.use('/api/bookings', bookingRoutes);
-app.use('/api/tickets', ticketRoutes);
-app.use('/api/memberships', membershipRoutes);
-app.use('/api/notifications', notificationRoutes);
-app.use('/api/announcements', announcementRoutes);
-app.use('/api/gallery', galleryRoutes);
-app.use('/api/contact', contactRoutes);
-app.use('/api/users', usersRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/faqs', faqRoutes);
-app.use('/api/sponsors', sponsorRoutes);
-app.use('/api/testimonials', testimonialRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/favorites', favoriteRoutes);
-app.use('/api/waitlist', waitlistRoutes);
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/feedback', feedbackRoutes);
-app.use('/api/short-urls', shortUrlRoutes);
-app.use('/api/push', pushRoutes);
-app.use('/api/admin/analytics', analyticsRoutes);
-app.use('/api/cron', cronRoutes);
+// API Routes — all lazy-loaded to keep Vercel cold starts under 10s
+app.use('/api/auth', lazyRouter('./routes/auth'));
+app.use('/api/admin/auth', lazyRouter('./routes/adminAuth'));
+app.use('/api/events', lazyRouter('./routes/events'));
+app.use('/api/bookings', lazyRouter('./routes/bookings'));
+app.use('/api/tickets', lazyRouter('./routes/tickets'));
+app.use('/api/memberships', lazyRouter('./routes/memberships'));
+app.use('/api/notifications', lazyRouter('./routes/notifications'));
+app.use('/api/announcements', lazyRouter('./routes/announcements'));
+app.use('/api/gallery', lazyRouter('./routes/gallery'));
+app.use('/api/contact', lazyRouter('./routes/contact'));
+app.use('/api/users', lazyRouter('./routes/users'));
+app.use('/api/admin', lazyRouter('./routes/admin'));
+app.use('/api/faqs', lazyRouter('./routes/faqs'));
+app.use('/api/sponsors', lazyRouter('./routes/sponsors'));
+app.use('/api/testimonials', lazyRouter('./routes/testimonials'));
+app.use('/api/settings', lazyRouter('./routes/settings'));
+app.use('/api/favorites', lazyRouter('./routes/favorites'));
+app.use('/api/waitlist', lazyRouter('./routes/waitlist'));
+app.use('/api/reviews', lazyRouter('./routes/reviews'));
+app.use('/api/feedback', lazyRouter('./routes/feedback'));
+app.use('/api/short-urls', lazyRouter('./routes/shortUrls'));
+app.use('/api/push', lazyRouter('./routes/push'));
+app.use('/api/admin/analytics', lazyRouter('./routes/analytics'));
+app.use('/api/cron', lazyRouter('./routes/cron'));
 
 // Health check
 app.get('/api/health', (req, res) => {
